@@ -1,8 +1,8 @@
 from django.contrib import admin
 
 from .models import (
-    Book,
-    BookTitle,
+    Work,
+    WorkTitle,
     IndexEntry,
     IndexEntryLabel,
     IndexEntryReference,
@@ -14,8 +14,8 @@ from .models import (
 )
 
 
-class BookTitleInline(admin.TabularInline):
-    model = BookTitle
+class WorkTitleInline(admin.TabularInline):
+    model = WorkTitle
     extra = 1
 
 
@@ -41,17 +41,19 @@ class IndexEntryReferenceInline(admin.TabularInline):
     ordering = ['order']
 
 
-@admin.register(Book)
-class BookAdmin(admin.ModelAdmin):
-    inlines = [BookTitleInline]
-    list_display = ['slug', 'title_preview', 'created_at']
-    search_fields = ['slug', 'titles__label']
-    prepopulated_fields = {'slug': ()}
+@admin.register(Work)
+class WorkAdmin(admin.ModelAdmin):
+    inlines = [WorkTitleInline]
+    list_display = ['slug', 'work_type', 'title_preview', 'year', 'created_at']
+    list_filter = ['work_type', 'year']
+    search_fields = ['slug', 'canonical_title', 'titles__label']
+    autocomplete_fields = ['parent']
+    prepopulated_fields = {'slug': ('canonical_title',)}
 
     @admin.display(description='Title (en)')
     def title_preview(self, obj):
         title = obj.titles.filter(language='en').first() or obj.titles.first()
-        return title.label if title else '—'
+        return title.label if title else obj.canonical_title or '—'
 
 
 @admin.register(Person)
@@ -82,10 +84,10 @@ class SubjectAdmin(admin.ModelAdmin):
 
 @admin.register(Reference)
 class ReferenceAdmin(admin.ModelAdmin):
-    list_display = ['__str__', 'book', 'page_start', 'page_end']
-    list_filter = ['book']
-    search_fields = ['book__slug', 'book__titles__label']
-    autocomplete_fields = ['book']
+    list_display = ['__str__', 'work', 'page_start', 'page_end']
+    list_filter = ['work']
+    search_fields = ['work__slug', 'work__canonical_title', 'work__titles__label']
+    autocomplete_fields = ['work']
 
 
 @admin.register(IndexEntry)
