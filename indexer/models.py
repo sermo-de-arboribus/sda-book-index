@@ -134,22 +134,14 @@ class Reference(models.Model):
 
 
 class IndexEntry(models.Model):
-    """An index entry associating a person and/or subject with references."""
+    """A hierarchical index heading (up to 3 levels deep)."""
 
-    person = models.ForeignKey(
-        Person,
+    parent = models.ForeignKey(
+        'self',
         null=True,
         blank=True,
-        on_delete=models.SET_NULL,
-        related_name='index_entries',
-        db_index=True,
-    )
-    subject = models.ForeignKey(
-        Subject,
-        null=True,
-        blank=True,
-        on_delete=models.SET_NULL,
-        related_name='index_entries',
+        on_delete=models.PROTECT,
+        related_name='children',
         db_index=True,
     )
     references = models.ManyToManyField(
@@ -161,20 +153,68 @@ class IndexEntry(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
-        ordering = ['person__slug', 'subject__slug']
         verbose_name_plural = 'index entries'
 
     def clean(self):
-        if not self.person_id and not self.subject_id:
-            raise ValidationError('An index entry must have at least one of person or subject.')
+        if self.parent_id is None:
+            return
+
+        # Prevent self-parenting
+        if self.pk and self.parent_id == self.pk:
+            raise ValidationError(
+                {'parent': 'An index entry cannot be its own parent.'}
+            )
+
+        # Walk the ancestor chain to enforce max depth of 3 and detect cycles
+        depth = 1  # depth of this entry
+        seen = {self.pk} if self.pk else set()
+        node = self.parent
+        while node is not None:
+            depth += 1
+            if depth > 3:
+                raise ValidationError(
+                    {'parent': 'Index entries cannot be more than 3 levels deep.'}
+                )
+            if node.pk in seen:
+                raise ValidationError(
+                    {'parent': 'Circular parent relationship detected.'}
+                )
+            seen.add(node.pk)
+            node = node.parent
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        super().save(*args, **kwargs)
 
     def __str__(self):
-        parts = []
-        if self.person_id:
-            parts.append(str(self.person))
-        if self.subject_id:
-            parts.append(str(self.subject))
-        return ' / '.join(parts) if parts else f'IndexEntry #{self.pk}'
+        label = self.labels.filter(language='en').first()
+        if label is None:
+            label = self.labels.first()
+        return label.label if label else f'IndexEntry #{self.pk}'
+
+
+class IndexEntryLabel(models.Model):
+    """A multilingual label for an index entry (BCP-47 language tag)."""
+
+    index_entry = models.ForeignKey(
+        IndexEntry,
+        on_delete=models.CASCADE,
+        related_name='labels',
+    )
+    language = models.CharField(max_length=35, db_index=True)
+    label = models.CharField(max_length=500)
+    sort_key = models.CharField(max_length=500, blank=True)
+
+    class Meta:
+        unique_together = [('index_entry', 'language', 'label')]
+        ordering = ['language']
+        indexes = [
+            models.Index(fields=['index_entry', 'language']),
+            models.Index(fields=['language', 'label']),
+        ]
+
+    def __str__(self):
+        return f'{self.label} ({self.language})'
 
 
 class IndexEntryReference(models.Model):

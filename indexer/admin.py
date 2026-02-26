@@ -4,6 +4,7 @@ from .models import (
     Book,
     BookTitle,
     IndexEntry,
+    IndexEntryLabel,
     IndexEntryReference,
     Person,
     PersonName,
@@ -25,6 +26,11 @@ class PersonNameInline(admin.TabularInline):
 
 class SubjectLabelInline(admin.TabularInline):
     model = SubjectLabel
+    extra = 1
+
+
+class IndexEntryLabelInline(admin.TabularInline):
+    model = IndexEntryLabel
     extra = 1
 
 
@@ -84,13 +90,13 @@ class ReferenceAdmin(admin.ModelAdmin):
 
 @admin.register(IndexEntry)
 class IndexEntryAdmin(admin.ModelAdmin):
-    inlines = [IndexEntryReferenceInline]
-    list_display = ['__str__', 'person', 'subject', 'created_at']
-    list_filter = ['person', 'subject']
-    search_fields = [
-        'person__slug',
-        'person__names__label',
-        'subject__slug',
-        'subject__labels__label',
-    ]
-    autocomplete_fields = ['person', 'subject']
+    inlines = [IndexEntryLabelInline, IndexEntryReferenceInline]
+    list_display = ['__str__', 'parent', 'label_preview', 'created_at']
+    list_filter = ['parent']
+    search_fields = ['labels__label']
+    autocomplete_fields = ['parent']
+
+    @admin.display(description='Label (en)')
+    def label_preview(self, obj):
+        label = obj.labels.filter(language='en').first() or obj.labels.first()
+        return label.label if label else '—'

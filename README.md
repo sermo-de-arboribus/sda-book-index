@@ -10,7 +10,23 @@ This application provides a Django Admin interface for managing a multilingual b
 - **People** with multilingual names
 - **Subjects** with hierarchical parent/child relationships and multilingual labels
 - **References** pointing to page ranges within books
-- **Index entries** associating people and/or subjects with one or more references
+- **Index entries** — hierarchical headings (up to 3 levels deep) with multilingual labels and attached references
+
+---
+
+## Data Model
+
+### Index entries
+
+`IndexEntry` represents a hierarchical index heading with up to 3 levels:
+
+- **Level 1** — root entry (no parent), e.g. a family name or main subject
+- **Level 2** — child of a level-1 entry, e.g. a given name or secondary subject
+- **Level 3** — grandchild of a level-1 entry, e.g. a subject heading under a person or a tertiary subject
+
+References can be attached to entries at any level via `IndexEntryReference`.
+
+Multilingual labels are stored in `IndexEntryLabel` (BCP-47 language tag, optional sort key).
 
 ---
 
