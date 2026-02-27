@@ -2,8 +2,18 @@ from django.core.exceptions import ValidationError
 from django.db import models
 
 
+class ContributorRole(models.TextChoices):
+    AUTHOR = 'author', 'Author'
+    EDITOR = 'editor', 'Editor'
+    ADVISOR = 'advisor', 'Advisor'
+    COMPOSER = 'composer', 'Composer'
+    COPY_EDITOR = 'copy-editor', 'Copy-editor'
+    ILLUSTRATOR = 'illustrator', 'Illustrator'
+    TRANSLATOR = 'translator', 'Translator'
+
+
 class Work(models.Model):
-    """A citable unit of work (book, chapter, article, etc.)."""
+    """A conceptual work (book, chapter, article, etc.)."""
 
     BOOK = 'book'
     CHAPTER = 'chapter'
@@ -29,9 +39,6 @@ class Work(models.Model):
     )
     canonical_title = models.CharField(max_length=500, blank=True)
     slug = models.SlugField(max_length=200, unique=True, db_index=True)
-    year = models.PositiveSmallIntegerField(null=True, blank=True, db_index=True)
-    publisher = models.CharField(max_length=500, blank=True)
-    isbn_issn = models.CharField(max_length=30, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -65,37 +72,147 @@ class WorkTitle(models.Model):
         return f'{self.label} ({self.language})'
 
 
-class Person(models.Model):
-    """A person who can appear in the index."""
+class Agent(models.Model):
+    """A person or corporation that can contribute to a work."""
 
+    PERSON = 'person'
+    CORPORATION = 'corporation'
+    AGENT_TYPE_CHOICES = [
+        (PERSON, 'Person'),
+        (CORPORATION, 'Corporation'),
+    ]
+
+    agent_type = models.CharField(
+        max_length=20, choices=AGENT_TYPE_CHOICES, default=PERSON, db_index=True
+    )
+    canonical_name = models.CharField(max_length=500, blank=True)
     slug = models.SlugField(max_length=200, unique=True, db_index=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         ordering = ['slug']
-        verbose_name_plural = 'people'
 
     def __str__(self):
         name = self.names.filter(language='en').first()
         if name is None:
             name = self.names.first()
-        return name.label if name else self.slug
+        return name.label if name else self.canonical_name or self.slug
 
 
-class PersonName(models.Model):
-    """A multilingual name for a person (BCP-47 language tag)."""
+class AgentName(models.Model):
+    """A multilingual name for an agent (BCP-47 language tag)."""
 
-    person = models.ForeignKey(Person, on_delete=models.CASCADE, related_name='names')
+    agent = models.ForeignKey(Agent, on_delete=models.CASCADE, related_name='names')
     language = models.CharField(max_length=35, db_index=True)
     label = models.CharField(max_length=500)
+    sort_key = models.CharField(max_length=500, blank=True)
 
     class Meta:
-        unique_together = [('person', 'language', 'label')]
+        unique_together = [('agent', 'language', 'label')]
         ordering = ['language']
+        indexes = [
+            models.Index(fields=['agent', 'language'], name='indexer_an_agent_lang_idx'),
+            models.Index(fields=['language', 'label'], name='indexer_an_lang_label_idx'),
+        ]
 
     def __str__(self):
         return f'{self.label} ({self.language})'
+
+
+class WorkContribution(models.Model):
+    """A contributor's role in creating a work."""
+
+    work = models.ForeignKey(Work, on_delete=models.CASCADE, related_name='contributions')
+    agent = models.ForeignKey(Agent, on_delete=models.PROTECT, related_name='work_contributions')
+    role = models.CharField(max_length=20, choices=ContributorRole.choices)
+    sort_order = models.PositiveIntegerField(default=0, db_index=True)
+
+    class Meta:
+        unique_together = [('work', 'agent', 'role')]
+        ordering = ['sort_order', 'agent__slug']
+
+    def __str__(self):
+        return f'{self.agent} ({self.role}) → {self.work}'
+
+
+class Manifestation(models.Model):
+    """A physical or digital manifestation of a work."""
+
+    work = models.ForeignKey(Work, on_delete=models.PROTECT, related_name='manifestations')
+    canonical_title = models.CharField(max_length=500, blank=True)
+    slug = models.SlugField(max_length=200, unique=True, db_index=True)
+    year = models.PositiveSmallIntegerField(null=True, blank=True, db_index=True)
+    publisher = models.CharField(max_length=500, blank=True)
+    isbn_issn = models.CharField(max_length=30, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['slug']
+
+    def __str__(self):
+        title = self.titles.filter(language='en').first()
+        if title is None:
+            title = self.titles.first()
+        return title.label if title else self.canonical_title or self.slug
+
+    def effective_contributions(self):
+        """Return the effective union of work-level and manifestation-level contributions.
+
+        Work-level contributions take precedence: if the same (agent, role) pair exists
+        at both levels, the manifestation-level entry is ignored (not a duplicate override).
+        """
+        from django.db.models import Q
+
+        work_contribs = list(
+            self.work.contributions.select_related('agent').order_by('sort_order', 'agent__slug')
+        )
+        # Build exclusion filter for (agent, role) pairs already present at work level
+        work_keys = [(c.agent_id, c.role) for c in work_contribs]
+        exclude_filter = Q()
+        for agent_id, role in work_keys:
+            exclude_filter |= Q(agent_id=agent_id, role=role)
+        mf_qs = self.contributions.select_related('agent').order_by('sort_order', 'agent__slug')
+        if exclude_filter:
+            mf_qs = mf_qs.exclude(exclude_filter)
+        return work_contribs + list(mf_qs)
+
+
+class ManifestationTitle(models.Model):
+    """A multilingual title for a manifestation (BCP-47 language tag)."""
+
+    manifestation = models.ForeignKey(Manifestation, on_delete=models.CASCADE, related_name='titles')
+    language = models.CharField(max_length=35, db_index=True)
+    label = models.CharField(max_length=500)
+    sort_key = models.CharField(max_length=500, blank=True)
+
+    class Meta:
+        unique_together = [('manifestation', 'language', 'label')]
+        ordering = ['language']
+        indexes = [
+            models.Index(fields=['manifestation', 'language'], name='indexer_mt_mf_lang_idx'),
+            models.Index(fields=['language', 'label'], name='indexer_mt_lang_label_idx'),
+        ]
+
+    def __str__(self):
+        return f'{self.label} ({self.language})'
+
+
+class ManifestationContribution(models.Model):
+    """A contributor's role specific to a manifestation (adds to work-level contributions)."""
+
+    manifestation = models.ForeignKey(Manifestation, on_delete=models.CASCADE, related_name='contributions')
+    agent = models.ForeignKey(Agent, on_delete=models.PROTECT, related_name='manifestation_contributions')
+    role = models.CharField(max_length=20, choices=ContributorRole.choices)
+    sort_order = models.PositiveIntegerField(default=0, db_index=True)
+
+    class Meta:
+        unique_together = [('manifestation', 'agent', 'role')]
+        ordering = ['sort_order', 'agent__slug']
+
+    def __str__(self):
+        return f'{self.agent} ({self.role}) → {self.manifestation}'
 
 
 class Subject(models.Model):
@@ -139,16 +256,18 @@ class SubjectLabel(models.Model):
 
 
 class Reference(models.Model):
-    """A reference to a page range within a work."""
+    """A reference to a page range within a manifestation."""
 
-    work = models.ForeignKey(Work, on_delete=models.CASCADE, related_name='references', db_index=True)
+    manifestation = models.ForeignKey(
+        Manifestation, on_delete=models.CASCADE, related_name='references', db_index=True
+    )
     page_start = models.PositiveIntegerField()
     page_end = models.PositiveIntegerField()
 
     class Meta:
-        ordering = ['work', 'page_start', 'page_end']
+        ordering = ['manifestation', 'page_start', 'page_end']
         indexes = [
-            models.Index(fields=['work', 'page_start'], name='indexer_ref_work_start_idx'),
+            models.Index(fields=['manifestation', 'page_start'], name='indexer_ref_mf_start_idx'),
         ]
 
     def clean(self):
@@ -160,8 +279,8 @@ class Reference(models.Model):
 
     def __str__(self):
         if self.page_start == self.page_end:
-            return f'{self.work} p. {self.page_start}'
-        return f'{self.work} pp. {self.page_start}–{self.page_end}'
+            return f'{self.manifestation} p. {self.page_start}'
+        return f'{self.manifestation} pp. {self.page_start}–{self.page_end}'
 
 
 class IndexEntry(models.Model):
@@ -264,7 +383,7 @@ class IndexEntryReference(models.Model):
     order = models.PositiveIntegerField(default=0, db_index=True)
 
     class Meta:
-        ordering = ['order', 'reference__work__slug', 'reference__page_start']
+        ordering = ['order', 'reference__manifestation__slug', 'reference__page_start']
         unique_together = [('index_entry', 'reference')]
 
     def __str__(self):
