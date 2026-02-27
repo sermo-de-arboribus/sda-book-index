@@ -2,10 +2,36 @@ from django.core.exceptions import ValidationError
 from django.db import models
 
 
-class Book(models.Model):
-    """A book that can be indexed."""
+class Work(models.Model):
+    """A citable unit of work (book, chapter, article, etc.)."""
 
+    BOOK = 'book'
+    CHAPTER = 'chapter'
+    ARTICLE = 'article'
+    OTHER = 'other'
+    WORK_TYPE_CHOICES = [
+        (BOOK, 'Book'),
+        (CHAPTER, 'Chapter'),
+        (ARTICLE, 'Article'),
+        (OTHER, 'Other'),
+    ]
+
+    work_type = models.CharField(
+        max_length=20, choices=WORK_TYPE_CHOICES, default=BOOK, db_index=True
+    )
+    parent = models.ForeignKey(
+        'self',
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name='parts',
+        db_index=True,
+    )
+    canonical_title = models.CharField(max_length=500, blank=True)
     slug = models.SlugField(max_length=200, unique=True, db_index=True)
+    year = models.PositiveSmallIntegerField(null=True, blank=True, db_index=True)
+    publisher = models.CharField(max_length=500, blank=True)
+    isbn_issn = models.CharField(max_length=30, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -16,19 +42,24 @@ class Book(models.Model):
         title = self.titles.filter(language='en').first()
         if title is None:
             title = self.titles.first()
-        return title.label if title else self.slug
+        return title.label if title else self.canonical_title or self.slug
 
 
-class BookTitle(models.Model):
-    """A multilingual title for a book (BCP-47 language tag)."""
+class WorkTitle(models.Model):
+    """A multilingual title for a work (BCP-47 language tag)."""
 
-    book = models.ForeignKey(Book, on_delete=models.CASCADE, related_name='titles')
+    work = models.ForeignKey(Work, on_delete=models.CASCADE, related_name='titles')
     language = models.CharField(max_length=35, db_index=True)
     label = models.CharField(max_length=500)
+    sort_key = models.CharField(max_length=500, blank=True)
 
     class Meta:
-        unique_together = [('book', 'language', 'label')]
+        unique_together = [('work', 'language', 'label')]
         ordering = ['language']
+        indexes = [
+            models.Index(fields=['work', 'language'], name='indexer_wt_work_lang_idx'),
+            models.Index(fields=['language', 'label'], name='indexer_wt_lang_label_idx'),
+        ]
 
     def __str__(self):
         return f'{self.label} ({self.language})'
@@ -108,16 +139,16 @@ class SubjectLabel(models.Model):
 
 
 class Reference(models.Model):
-    """A reference to a page range within a book."""
+    """A reference to a page range within a work."""
 
-    book = models.ForeignKey(Book, on_delete=models.CASCADE, related_name='references', db_index=True)
+    work = models.ForeignKey(Work, on_delete=models.CASCADE, related_name='references', db_index=True)
     page_start = models.PositiveIntegerField()
     page_end = models.PositiveIntegerField()
 
     class Meta:
-        ordering = ['book', 'page_start', 'page_end']
+        ordering = ['work', 'page_start', 'page_end']
         indexes = [
-            models.Index(fields=['book', 'page_start']),
+            models.Index(fields=['work', 'page_start'], name='indexer_ref_work_start_idx'),
         ]
 
     def clean(self):
@@ -129,8 +160,8 @@ class Reference(models.Model):
 
     def __str__(self):
         if self.page_start == self.page_end:
-            return f'{self.book} p. {self.page_start}'
-        return f'{self.book} pp. {self.page_start}–{self.page_end}'
+            return f'{self.work} p. {self.page_start}'
+        return f'{self.work} pp. {self.page_start}–{self.page_end}'
 
 
 class IndexEntry(models.Model):
@@ -233,7 +264,7 @@ class IndexEntryReference(models.Model):
     order = models.PositiveIntegerField(default=0, db_index=True)
 
     class Meta:
-        ordering = ['order', 'reference__book__slug', 'reference__page_start']
+        ordering = ['order', 'reference__work__slug', 'reference__page_start']
         unique_together = [('index_entry', 'reference')]
 
     def __str__(self):
