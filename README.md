@@ -8,6 +8,7 @@ This application provides a Django Admin interface for managing a multilingual b
 
 - **Books** with multilingual titles (BCP-47 language tags)
 - **People** with multilingual names
+- **People** with external identifiers such as GND, ISNI, and ORCID
 - **Subjects** with hierarchical parent/child relationships and multilingual labels
 - **References** pointing to page ranges within books
 - **Index entries** — hierarchical headings (up to 3 levels deep) with multilingual labels and attached references

@@ -120,6 +120,54 @@ class AgentName(models.Model):
         return f'{self.label} ({self.language})'
 
 
+class PersonIdentifier(models.Model):
+    """An external identifier for a person agent."""
+
+    GND = 'gnd'
+    ISNI = 'isni'
+    ORCID = 'orcid'
+    IDENTIFIER_TYPE_CHOICES = [
+        (GND, 'GND'),
+        (ISNI, 'ISNI'),
+        (ORCID, 'ORCID'),
+    ]
+
+    agent = models.ForeignKey(
+        Agent,
+        on_delete=models.CASCADE,
+        related_name='person_identifiers',
+    )
+    identifier_type = models.CharField(max_length=20, choices=IDENTIFIER_TYPE_CHOICES, db_index=True)
+    value = models.CharField(max_length=255)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['identifier_type', 'value']
+        unique_together = [('agent', 'identifier_type'), ('identifier_type', 'value')]
+        indexes = [
+            models.Index(
+                fields=['agent', 'identifier_type'],
+                name='indexer_pi_agent_type_idx',
+            ),
+            models.Index(
+                fields=['identifier_type', 'value'],
+                name='indexer_pi_type_value_idx',
+            ),
+        ]
+
+    def clean(self):
+        if self.agent_id and self.agent.agent_type != Agent.PERSON:
+            raise ValidationError({'agent': 'Person identifiers can only be attached to person agents.'})
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f'{self.get_identifier_type_display()}: {self.value}'
+
+
 class WorkContribution(models.Model):
     """A contributor's role in creating a work."""
 

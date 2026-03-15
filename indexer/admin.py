@@ -10,6 +10,7 @@ from .models import (
     Manifestation,
     ManifestationContribution,
     ManifestationTitle,
+    PersonIdentifier,
     Reference,
     Subject,
     SubjectLabel,
@@ -32,6 +33,11 @@ class WorkContributionInline(admin.TabularInline):
 
 class AgentNameInline(admin.TabularInline):
     model = AgentName
+    extra = 1
+
+
+class PersonIdentifierInline(admin.TabularInline):
+    model = PersonIdentifier
     extra = 1
 
 
@@ -80,10 +86,10 @@ class WorkAdmin(admin.ModelAdmin):
 
 @admin.register(Agent)
 class AgentAdmin(admin.ModelAdmin):
-    inlines = [AgentNameInline]
+    inlines = [AgentNameInline, PersonIdentifierInline]
     list_display = ['slug', 'agent_type', 'name_preview', 'created_at']
     list_filter = ['agent_type']
-    search_fields = ['slug', 'canonical_name', 'names__label']
+    search_fields = ['slug', 'canonical_name', 'names__label', 'person_identifiers__value']
 
     @admin.display(description='Name (en)')
     def name_preview(self, obj):

@@ -12,6 +12,7 @@ from .models import (
     Manifestation,
     ManifestationContribution,
     ManifestationTitle,
+    PersonIdentifier,
     Reference,
     Work,
     WorkContribution,
@@ -112,6 +113,65 @@ class AgentNameModelTests(TestCase):
         AgentName.objects.create(agent=self.agent, language='en', label='Dup')
         with self.assertRaises(IntegrityError):
             AgentName.objects.create(agent=self.agent, language='en', label='Dup')
+
+
+class PersonIdentifierModelTests(TestCase):
+    def setUp(self):
+        self.person = Agent.objects.create(
+            slug='person-agent', agent_type=Agent.PERSON, canonical_name='Person Agent'
+        )
+        self.corporation = Agent.objects.create(
+            slug='corp-agent', agent_type=Agent.CORPORATION, canonical_name='Corp Agent'
+        )
+
+    def test_create_person_identifier(self):
+        identifier = PersonIdentifier.objects.create(
+            agent=self.person,
+            identifier_type=PersonIdentifier.ORCID,
+            value='0000-0002-1825-0097',
+        )
+        self.assertEqual(identifier.identifier_type, PersonIdentifier.ORCID)
+        self.assertEqual(str(identifier), 'ORCID: 0000-0002-1825-0097')
+
+    def test_reject_corporation_agent(self):
+        identifier = PersonIdentifier(
+            agent=self.corporation,
+            identifier_type=PersonIdentifier.GND,
+            value='1234567-8',
+        )
+        with self.assertRaises(ValidationError):
+            identifier.full_clean()
+
+    def test_unique_identifier_type_per_agent(self):
+        PersonIdentifier.objects.create(
+            agent=self.person,
+            identifier_type=PersonIdentifier.ISNI,
+            value='0000000121032683',
+        )
+        with self.assertRaises(ValidationError):
+            duplicate = PersonIdentifier(
+                agent=self.person,
+                identifier_type=PersonIdentifier.ISNI,
+                value='000000012146438X',
+            )
+            duplicate.full_clean()
+
+    def test_unique_identifier_value_per_type(self):
+        PersonIdentifier.objects.create(
+            agent=self.person,
+            identifier_type=PersonIdentifier.GND,
+            value='118540238',
+        )
+        other_person = Agent.objects.create(
+            slug='other-person', agent_type=Agent.PERSON, canonical_name='Other Person'
+        )
+        with self.assertRaises(ValidationError):
+            duplicate = PersonIdentifier(
+                agent=other_person,
+                identifier_type=PersonIdentifier.GND,
+                value='118540238',
+            )
+            duplicate.full_clean()
 
 
 class ManifestationModelTests(TestCase):
