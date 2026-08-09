@@ -5,6 +5,7 @@ from .models import (
     AgentName,
     ContributorRole,
     IndexEntry,
+    IndexEntryCrossReference,
     IndexEntryLabel,
     IndexEntryReference,
     Manifestation,
@@ -12,6 +13,7 @@ from .models import (
     ManifestationTitle,
     PersonIdentifier,
     Reference,
+    ReferenceLocator,
     Subject,
     SubjectLabel,
     Work,
@@ -66,6 +68,20 @@ class IndexEntryReferenceInline(admin.TabularInline):
     model = IndexEntryReference
     extra = 1
     autocomplete_fields = ['reference']
+    ordering = ['order']
+
+
+class ReferenceLocatorInline(admin.TabularInline):
+    model = ReferenceLocator
+    extra = 0
+    ordering = ['order']
+
+
+class IndexEntryCrossReferenceInline(admin.TabularInline):
+    model = IndexEntryCrossReference
+    fk_name = 'source_entry'
+    extra = 0
+    autocomplete_fields = ['target_entry']
     ordering = ['order']
 
 
@@ -128,7 +144,8 @@ class SubjectAdmin(admin.ModelAdmin):
 
 @admin.register(Reference)
 class ReferenceAdmin(admin.ModelAdmin):
-    list_display = ['__str__', 'manifestation', 'page_start', 'page_end']
+    inlines = [ReferenceLocatorInline]
+    list_display = ['__str__', 'manifestation', 'raw_document_preview', 'page_start', 'page_end']
     list_filter = ['manifestation__work']
     search_fields = [
         'manifestation__slug',
@@ -137,13 +154,19 @@ class ReferenceAdmin(admin.ModelAdmin):
         'manifestation__work__slug',
         'manifestation__work__canonical_title',
         'manifestation__work__titles__label',
+        'raw_document',
+        'raw_reference',
     ]
     autocomplete_fields = ['manifestation']
+
+    @admin.display(description='Document')
+    def raw_document_preview(self, obj):
+        return obj.raw_document or '—'
 
 
 @admin.register(IndexEntry)
 class IndexEntryAdmin(admin.ModelAdmin):
-    inlines = [IndexEntryLabelInline, IndexEntryReferenceInline]
+    inlines = [IndexEntryLabelInline, IndexEntryReferenceInline, IndexEntryCrossReferenceInline]
     list_display = ['__str__', 'parent', 'label_preview', 'created_at']
     list_filter = ['parent']
     search_fields = ['labels__label']

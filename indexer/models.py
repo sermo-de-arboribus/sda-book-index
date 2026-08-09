@@ -55,6 +55,7 @@ class Work(models.Model):
 class WorkTitle(models.Model):
     """A multilingual title for a work (BCP-47 language tag)."""
 
+    id = models.CharField(max_length=255, primary_key=True)
     work = models.ForeignKey(Work, on_delete=models.CASCADE, related_name='titles')
     language = models.CharField(max_length=35, db_index=True)
     label = models.CharField(max_length=500)
@@ -171,6 +172,7 @@ class PersonIdentifier(models.Model):
 class WorkContribution(models.Model):
     """A contributor's role in creating a work."""
 
+    id = models.CharField(max_length=255, primary_key=True)
     work = models.ForeignKey(Work, on_delete=models.CASCADE, related_name='contributions')
     agent = models.ForeignKey(Agent, on_delete=models.PROTECT, related_name='work_contributions')
     role = models.CharField(max_length=20, choices=ContributorRole.choices)
@@ -306,16 +308,32 @@ class SubjectLabel(models.Model):
 class Reference(models.Model):
     """A reference to a page range within a manifestation."""
 
+    RELATION_ON = 'on'
+    RELATION_BEFORE = 'before'
+    RELATION_AFTER = 'after'
+    RELATION_CHOICES = [
+        ('', RELATION_ON),
+        (RELATION_BEFORE, RELATION_BEFORE),
+        (RELATION_AFTER, RELATION_AFTER),
+    ]
+
     manifestation = models.ForeignKey(
         Manifestation, on_delete=models.CASCADE, related_name='references', db_index=True
     )
+    raw_reference = models.TextField(blank=True)
+    raw_document = models.CharField(max_length=1000, blank=True)
+    source_file = models.CharField(max_length=255, blank=True)
+    source_paragraph_number = models.PositiveIntegerField(null=True, blank=True)
     page_start = models.PositiveIntegerField()
+    page_start_relation = models.CharField(max_length=6, choices=RELATION_CHOICES, blank=True, default='')
     page_end = models.PositiveIntegerField()
+    page_end_relation = models.CharField(max_length=6, choices=RELATION_CHOICES, blank=True, default='')
 
     class Meta:
         ordering = ['manifestation', 'page_start', 'page_end']
         indexes = [
             models.Index(fields=['manifestation', 'page_start'], name='indexer_ref_mf_start_idx'),
+            models.Index(fields=['manifestation', 'raw_document'], name='indexer_ref_mf_doc_idx'),
         ]
 
     def clean(self):
@@ -325,10 +343,154 @@ class Reference(models.Model):
                     {'page_end': 'page_end must be greater than or equal to page_start.'}
                 )
 
+    @property
+    def effective_page_start_relation(self):
+        return self.page_start_relation or self.RELATION_ON
+
+    @property
+    def effective_page_end_relation(self):
+        return self.page_end_relation or self.RELATION_ON
+
     def __str__(self):
-        if self.page_start == self.page_end:
+        if self.page_start == self.page_end and self.page_start_relation == self.page_end_relation:
+            relation_prefix = self._relation_prefix(self.page_start_relation)
+            if relation_prefix:
+                return f'{self.manifestation} {relation_prefix} p. {self.page_start}'
             return f'{self.manifestation} p. {self.page_start}'
-        return f'{self.manifestation} pp. {self.page_start}–{self.page_end}'
+        start = self._format_page_boundary(self.page_start, self.page_start_relation)
+        end = self._format_page_boundary(self.page_end, self.page_end_relation)
+        return f'{self.manifestation} pp. {start}–{end}'
+
+    def _format_page_boundary(self, page, relation):
+        relation_prefix = self._relation_prefix(relation)
+        if relation_prefix:
+            return f'{relation_prefix} {page}'
+        return str(page)
+
+    def _relation_prefix(self, relation):
+        if relation == self.RELATION_BEFORE:
+            return 'before'
+        if relation == self.RELATION_AFTER:
+            return 'after'
+        return ''
+
+
+class ReferenceLocator(models.Model):
+    """A single locator inside a bibliographic reference block."""
+
+    UNIT_PAGE = ''
+    UNIT_COLUMN = 'column'
+    UNIT_FIGURE = 'figure'
+    UNIT_CHOICES = [
+        (UNIT_PAGE, 'page'),
+        (UNIT_COLUMN, 'column'),
+        (UNIT_FIGURE, 'figure'),
+    ]
+
+    RELATION_ON = ''
+    RELATION_BEFORE = 'before'
+    RELATION_AFTER = 'after'
+    RELATION_CHOICES = [
+        (RELATION_ON, 'on'),
+        (RELATION_BEFORE, 'before'),
+        (RELATION_AFTER, 'after'),
+    ]
+
+    SCOPE_NORMAL = ''
+    SCOPE_PASSIM = 'passim'
+    SCOPE_CHOICES = [
+        (SCOPE_NORMAL, 'normal'),
+        (SCOPE_PASSIM, 'passim'),
+    ]
+
+    ALLOWED_REFERENCE_TYPE_CODES = {'T', 'B', 'F', 'A', 'Z'}
+
+    reference = models.ForeignKey(
+        Reference,
+        on_delete=models.CASCADE,
+        related_name='locators',
+    )
+    order = models.PositiveIntegerField(default=0, db_index=True)
+    locator_unit = models.CharField(max_length=10, choices=UNIT_CHOICES, blank=True, default='')
+    locator_start = models.PositiveIntegerField(null=True, blank=True)
+    locator_end = models.PositiveIntegerField(null=True, blank=True)
+    start_relation = models.CharField(max_length=6, choices=RELATION_CHOICES, blank=True, default='')
+    end_relation = models.CharField(max_length=6, choices=RELATION_CHOICES, blank=True, default='')
+    locator_scope = models.CharField(max_length=12, choices=SCOPE_CHOICES, blank=True, default='')
+    raw_locator = models.CharField(max_length=255)
+    reference_type_codes = models.CharField(max_length=16, blank=True, default='')
+
+    class Meta:
+        ordering = ['order', 'locator_start', 'locator_end']
+        indexes = [
+            models.Index(fields=['reference', 'order'], name='indexer_rl_ref_order_idx'),
+            models.Index(fields=['locator_unit', 'locator_start'], name='indexer_rl_unit_start_idx'),
+            models.Index(fields=['locator_scope'], name='indexer_rl_scope_idx'),
+        ]
+
+    @property
+    def effective_locator_unit(self):
+        return self.locator_unit or 'page'
+
+    @property
+    def effective_start_relation(self):
+        return self.start_relation or 'on'
+
+    @property
+    def effective_end_relation(self):
+        return self.end_relation or 'on'
+
+    @property
+    def effective_reference_type_codes(self):
+        if not self.reference_type_codes:
+            return ('T',)
+        return tuple(self.reference_type_codes)
+
+    def clean(self):
+        if self.locator_scope == self.SCOPE_PASSIM:
+            if self.locator_start is not None or self.locator_end is not None:
+                raise ValidationError(
+                    {'locator_scope': 'passim locators cannot store numeric start/end values.'}
+                )
+            if self.start_relation or self.end_relation:
+                raise ValidationError(
+                    {'locator_scope': 'passim locators cannot store before/after relations.'}
+                )
+
+        if self.locator_start is not None and self.locator_end is not None:
+            if self.locator_end < self.locator_start:
+                raise ValidationError(
+                    {'locator_end': 'locator_end must be greater than or equal to locator_start.'}
+                )
+
+        if self.start_relation and self.locator_start is None:
+            raise ValidationError(
+                {'start_relation': 'start_relation requires a numeric locator_start.'}
+            )
+        if self.end_relation and self.locator_end is None:
+            raise ValidationError(
+                {'end_relation': 'end_relation requires a numeric locator_end.'}
+            )
+
+        if self.reference_type_codes:
+            if any(code not in self.ALLOWED_REFERENCE_TYPE_CODES for code in self.reference_type_codes):
+                raise ValidationError(
+                    {'reference_type_codes': 'reference_type_codes may only contain T, B, F, A, Z.'}
+                )
+            if len(set(self.reference_type_codes)) != len(self.reference_type_codes):
+                raise ValidationError(
+                    {'reference_type_codes': 'reference_type_codes may not contain duplicates.'}
+                )
+            normalized = ''.join(sorted(self.reference_type_codes))
+            if self.reference_type_codes != normalized:
+                raise ValidationError(
+                    {'reference_type_codes': 'reference_type_codes must be stored in sorted order.'}
+                )
+
+    def __str__(self):
+        if self.locator_scope == self.SCOPE_PASSIM:
+            return self.raw_locator or 'passim'
+        return self.raw_locator
 
 
 class IndexEntry(models.Model):
@@ -389,6 +551,48 @@ class IndexEntry(models.Model):
         if label is None:
             label = self.labels.first()
         return label.label if label else f'IndexEntry #{self.pk}'
+
+
+class IndexEntryCrossReference(models.Model):
+    """A cross-reference from one index entry to another index entry."""
+
+    KIND_SEE = 'see'
+    KIND_SEE_ALSO = 'see_also'
+    KIND_COMPARE = 'compare'
+    KIND_CHOICES = [
+        (KIND_SEE, 'See'),
+        (KIND_SEE_ALSO, 'See also'),
+        (KIND_COMPARE, 'Compare'),
+    ]
+
+    source_entry = models.ForeignKey(
+        IndexEntry,
+        on_delete=models.CASCADE,
+        related_name='cross_references',
+    )
+    target_entry = models.ForeignKey(
+        IndexEntry,
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name='incoming_cross_references',
+    )
+    kind = models.CharField(max_length=12, choices=KIND_CHOICES)
+    marker = models.CharField(max_length=20)
+    target_raw = models.CharField(max_length=1000)
+    order = models.PositiveIntegerField(default=0, db_index=True)
+
+    class Meta:
+        ordering = ['order', 'kind', 'target_raw']
+        indexes = [
+            models.Index(fields=['source_entry', 'order'], name='indexer_ixcr_src_order_idx'),
+            models.Index(fields=['target_entry'], name='indexer_ixcr_target_idx'),
+            models.Index(fields=['kind'], name='indexer_ixcr_kind_idx'),
+        ]
+
+    def __str__(self):
+        target = self.target_entry or self.target_raw
+        return f'{self.source_entry} {self.kind} {target}'
 
 
 class IndexEntryLabel(models.Model):

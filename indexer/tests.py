@@ -7,6 +7,7 @@ from .models import (
     AgentName,
     ContributorRole,
     IndexEntry,
+    IndexEntryCrossReference,
     IndexEntryLabel,
     IndexEntryReference,
     Manifestation,
@@ -14,6 +15,7 @@ from .models import (
     ManifestationTitle,
     PersonIdentifier,
     Reference,
+    ReferenceLocator,
     Work,
     WorkContribution,
     WorkTitle,
@@ -28,8 +30,8 @@ class WorkModelTests(TestCase):
 
     def test_str_uses_english_title(self):
         w = Work.objects.create(slug='test', work_type=Work.BOOK, canonical_title='Fallback')
-        WorkTitle.objects.create(work=w, language='de', label='Deutsches Buch')
-        WorkTitle.objects.create(work=w, language='en', label='English Book')
+        WorkTitle.objects.create(id='test-de', work=w, language='de', label='Deutsches Buch')
+        WorkTitle.objects.create(id='test-en', work=w, language='en', label='English Book')
         self.assertEqual(str(w), 'English Book')
 
     def test_str_falls_back_to_canonical_title(self):
@@ -59,16 +61,17 @@ class WorkTitleModelTests(TestCase):
         self.work = Work.objects.create(slug='titled-work', work_type=Work.BOOK, canonical_title='T')
 
     def test_create_title(self):
-        t = WorkTitle.objects.create(work=self.work, language='en', label='Titled Work')
+        t = WorkTitle.objects.create(id='work-title-en', work=self.work, language='en', label='Titled Work')
         self.assertEqual(str(t), 'Titled Work (en)')
+        self.assertEqual(t.pk, 'work-title-en')
 
     def test_unique_together(self):
-        WorkTitle.objects.create(work=self.work, language='en', label='Dup')
+        WorkTitle.objects.create(id='dup-1', work=self.work, language='en', label='Dup')
         with self.assertRaises(IntegrityError):
-            WorkTitle.objects.create(work=self.work, language='en', label='Dup')
+            WorkTitle.objects.create(id='dup-2', work=self.work, language='en', label='Dup')
 
     def test_sort_key_optional(self):
-        t = WorkTitle.objects.create(work=self.work, language='la', label='Opus')
+        t = WorkTitle.objects.create(id='opus-la', work=self.work, language='la', label='Opus')
         self.assertEqual(t.sort_key, '')
 
 
@@ -238,18 +241,27 @@ class WorkContributionTests(TestCase):
 
     def test_create_contribution(self):
         wc = WorkContribution.objects.create(
-            work=self.work, agent=self.agent, role=ContributorRole.AUTHOR
+            id='contrib-author', work=self.work, agent=self.agent, role=ContributorRole.AUTHOR
         )
         self.assertEqual(wc.role, 'author')
+        self.assertEqual(wc.pk, 'contrib-author')
 
     def test_unique_together(self):
-        WorkContribution.objects.create(work=self.work, agent=self.agent, role=ContributorRole.AUTHOR)
+        WorkContribution.objects.create(
+            id='contrib-1', work=self.work, agent=self.agent, role=ContributorRole.AUTHOR
+        )
         with self.assertRaises(Exception):
-            WorkContribution.objects.create(work=self.work, agent=self.agent, role=ContributorRole.AUTHOR)
+            WorkContribution.objects.create(
+                id='contrib-2', work=self.work, agent=self.agent, role=ContributorRole.AUTHOR
+            )
 
     def test_same_agent_different_roles_allowed(self):
-        WorkContribution.objects.create(work=self.work, agent=self.agent, role=ContributorRole.AUTHOR)
-        WorkContribution.objects.create(work=self.work, agent=self.agent, role=ContributorRole.EDITOR)
+        WorkContribution.objects.create(
+            id='contrib-author', work=self.work, agent=self.agent, role=ContributorRole.AUTHOR
+        )
+        WorkContribution.objects.create(
+            id='contrib-editor', work=self.work, agent=self.agent, role=ContributorRole.EDITOR
+        )
         self.assertEqual(self.work.contributions.count(), 2)
 
 
@@ -262,13 +274,17 @@ class EffectiveContributionsTests(TestCase):
         self.agent_c = Agent.objects.create(slug='agent-c', canonical_name='C')
 
     def test_only_work_contributions(self):
-        WorkContribution.objects.create(work=self.work, agent=self.agent_a, role=ContributorRole.AUTHOR)
+        WorkContribution.objects.create(
+            id='eff-work-author', work=self.work, agent=self.agent_a, role=ContributorRole.AUTHOR
+        )
         effective = self.mf.effective_contributions()
         self.assertEqual(len(effective), 1)
         self.assertEqual(effective[0].agent, self.agent_a)
 
     def test_union_no_overlap(self):
-        WorkContribution.objects.create(work=self.work, agent=self.agent_a, role=ContributorRole.AUTHOR)
+        WorkContribution.objects.create(
+            id='eff-work-author', work=self.work, agent=self.agent_a, role=ContributorRole.AUTHOR
+        )
         ManifestationContribution.objects.create(
             manifestation=self.mf, agent=self.agent_b, role=ContributorRole.TRANSLATOR
         )
@@ -280,7 +296,9 @@ class EffectiveContributionsTests(TestCase):
 
     def test_duplicate_agent_role_ignored(self):
         """If same (agent, role) exists at work and manifestation level, mf entry is ignored."""
-        WorkContribution.objects.create(work=self.work, agent=self.agent_a, role=ContributorRole.AUTHOR)
+        WorkContribution.objects.create(
+            id='eff-work-author', work=self.work, agent=self.agent_a, role=ContributorRole.AUTHOR
+        )
         ManifestationContribution.objects.create(
             manifestation=self.mf, agent=self.agent_a, role=ContributorRole.AUTHOR
         )
@@ -290,7 +308,9 @@ class EffectiveContributionsTests(TestCase):
 
     def test_same_agent_different_roles_both_included(self):
         """Same agent with different roles at work and manifestation level: both included."""
-        WorkContribution.objects.create(work=self.work, agent=self.agent_a, role=ContributorRole.AUTHOR)
+        WorkContribution.objects.create(
+            id='eff-work-author', work=self.work, agent=self.agent_a, role=ContributorRole.AUTHOR
+        )
         ManifestationContribution.objects.create(
             manifestation=self.mf, agent=self.agent_a, role=ContributorRole.TRANSLATOR
         )
@@ -310,6 +330,20 @@ class ReferenceModelTests(TestCase):
         r = Reference.objects.create(manifestation=self.mf, page_start=1, page_end=10)
         self.assertEqual(r.manifestation, self.mf)
 
+    def test_reference_supports_raw_metadata_fields(self):
+        r = Reference.objects.create(
+            manifestation=self.mf,
+            raw_reference='Habermas, J.: „...“, Sp. 2',
+            raw_document='Habermas, J.: „...“',
+            source_file='Index B.odt',
+            source_paragraph_number=202,
+            page_start=2,
+            page_end=2,
+        )
+        self.assertEqual(r.raw_document, 'Habermas, J.: „...“')
+        self.assertEqual(r.source_file, 'Index B.odt')
+        self.assertEqual(r.source_paragraph_number, 202)
+
     def test_str_single_page(self):
         r = Reference.objects.create(manifestation=self.mf, page_start=5, page_end=5)
         self.assertIn('p. 5', str(r))
@@ -318,9 +352,127 @@ class ReferenceModelTests(TestCase):
         r = Reference.objects.create(manifestation=self.mf, page_start=5, page_end=10)
         self.assertIn('pp. 5', str(r))
 
+    def test_str_single_page_after_relation(self):
+        r = Reference.objects.create(
+            manifestation=self.mf,
+            page_start=64,
+            page_start_relation=Reference.RELATION_AFTER,
+            page_end=64,
+            page_end_relation=Reference.RELATION_AFTER,
+        )
+        self.assertIn('after p. 64', str(r))
+
+    def test_effective_relations_default_to_on(self):
+        r = Reference.objects.create(manifestation=self.mf, page_start=64, page_end=64)
+        self.assertEqual(r.page_start_relation, '')
+        self.assertEqual(r.page_end_relation, '')
+        self.assertEqual(r.effective_page_start_relation, Reference.RELATION_ON)
+        self.assertEqual(r.effective_page_end_relation, Reference.RELATION_ON)
+
     def test_clean_rejects_invalid_range(self):
         r = Reference(manifestation=self.mf, page_start=10, page_end=5)
         with self.assertRaises(ValidationError):
             r.clean()
+
+
+class ReferenceLocatorModelTests(TestCase):
+    def setUp(self):
+        self.work = Work.objects.create(slug='locator-work', canonical_title='Locator Work')
+        self.mf = Manifestation.objects.create(work=self.work, slug='locator-mf', canonical_title='Locator Mf')
+        self.reference = Reference.objects.create(manifestation=self.mf, page_start=1, page_end=1)
+
+    def test_defaults_are_compact(self):
+        locator = ReferenceLocator.objects.create(
+            reference=self.reference,
+            raw_locator='64(B)',
+            locator_start=64,
+            locator_end=64,
+        )
+        self.assertEqual(locator.locator_unit, '')
+        self.assertEqual(locator.start_relation, '')
+        self.assertEqual(locator.end_relation, '')
+        self.assertEqual(locator.locator_scope, '')
+        self.assertEqual(locator.reference_type_codes, '')
+        self.assertEqual(locator.effective_locator_unit, 'page')
+        self.assertEqual(locator.effective_start_relation, 'on')
+        self.assertEqual(locator.effective_end_relation, 'on')
+        self.assertEqual(locator.effective_reference_type_codes, ('T',))
+
+    def test_passim_rejects_numeric_values(self):
+        locator = ReferenceLocator(
+            reference=self.reference,
+            raw_locator='passim',
+            locator_scope=ReferenceLocator.SCOPE_PASSIM,
+            locator_start=1,
+        )
+        with self.assertRaises(ValidationError):
+            locator.full_clean()
+
+    def test_relation_requires_numeric_boundary(self):
+        locator = ReferenceLocator(
+            reference=self.reference,
+            raw_locator='nach S. 64(B)',
+            start_relation=ReferenceLocator.RELATION_AFTER,
+        )
+        with self.assertRaises(ValidationError):
+            locator.full_clean()
+
+    def test_rejects_unsorted_or_duplicate_reference_type_codes(self):
+        locator = ReferenceLocator(
+            reference=self.reference,
+            raw_locator='64(T+B)',
+            locator_start=64,
+            locator_end=64,
+            reference_type_codes='BTB',
+        )
+        with self.assertRaises(ValidationError):
+            locator.full_clean()
+
+        locator.reference_type_codes = 'ZB'
+        with self.assertRaises(ValidationError):
+            locator.full_clean()
+
+    def test_accepts_normalized_locator_metadata(self):
+        locator = ReferenceLocator(
+            reference=self.reference,
+            order=1,
+            locator_unit=ReferenceLocator.UNIT_COLUMN,
+            locator_start=1,
+            locator_end=2,
+            raw_locator='Sp. 1/2',
+            reference_type_codes='BZ',
+        )
+        locator.full_clean()
+        self.assertEqual(str(locator), 'Sp. 1/2')
+
+
+class IndexEntryCrossReferenceModelTests(TestCase):
+    def setUp(self):
+        self.source = IndexEntry.objects.create()
+        IndexEntryLabel.objects.create(index_entry=self.source, language='de', label='Andromeda')
+        self.target = IndexEntry.objects.create()
+        IndexEntryLabel.objects.create(index_entry=self.target, language='de', label='Perseus und')
+
+    def test_create_cross_reference_with_unresolved_target(self):
+        ref = IndexEntryCrossReference.objects.create(
+            source_entry=self.source,
+            kind=IndexEntryCrossReference.KIND_SEE,
+            marker='s.',
+            target_raw='Andromeda; Perseus und',
+        )
+        self.assertIsNone(ref.target_entry)
+        self.assertEqual(ref.kind, IndexEntryCrossReference.KIND_SEE)
+
+    def test_create_cross_reference_with_resolved_target(self):
+        ref = IndexEntryCrossReference.objects.create(
+            source_entry=self.source,
+            target_entry=self.target,
+            kind=IndexEntryCrossReference.KIND_SEE_ALSO,
+            marker='siehe auch',
+            target_raw='Andromeda; Perseus und',
+            order=2,
+        )
+        self.assertEqual(ref.target_entry, self.target)
+        self.assertEqual(ref.order, 2)
 
 

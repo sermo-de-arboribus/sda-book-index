@@ -92,6 +92,37 @@ Then open <http://127.0.0.1:8000/admin/> in your browser and log in with the sup
 
 ---
 
+## ODT Index Extraction
+
+The repository now includes a parser for ODT index paragraphs plus a management command for exporting structured JSON from source files named `Index*.odt` and `Sachregister*.odt`.
+
+```bash
+python manage.py extract_odt_index /path/to/odt/folder --pretty --output parsed-index.json
+```
+
+To collect unparsable source paragraphs for manual correction in the ODT files:
+
+```bash
+python manage.py extract_odt_index /path/to/odt/folder --pretty --output parsed-index.json --error-output odt-parse-errors.txt
+```
+
+To extract likely legacy `s.` / `siehe` cross-references whose target lemma should be rewritten with square brackets because it contains a semicolon:
+
+```bash
+python manage.py suggest_bracketed_crossrefs odt-parse-errors.txt --output odt-crossref-bracket-suggestions.txt
+```
+
+The parser treats the final `:\t` sequence in each paragraph as the boundary between lemma and references, distinguishes page-style locator markers `S.`, `Sp.` and `Abb.` from cross-reference markers such as `s.`, `siehe`, `siehe auch`, and `vgl.`, understands anchors like `vor S. 64(B)` and `nach S. 64(B)`, recognizes `passim` as a whole-edition page scope, removes parenthetical lemma metadata from the visible label, strips soft hyphens from normalized text, and captures page reference types such as the implicit `T` plus explicit codes like `B`, `F`, `A`, `Z`, and combinations such as `T+B`.
+
+For page relations, the implicit default is `on`: the export only writes `page_start_relation` and `page_end_relation` when the source explicitly says `vor` or `nach`, and the Django model stores `on` as an empty value to avoid writing it redundantly.
+
+For cross-references whose target lemma itself contains a semicolon, the preferred source format is `siehe [Lemma; Unterlemma]`. The parser treats semicolons inside square brackets as part of the target lemma instead of splitting them into separate references.
+
+The EBNF description and parser assumptions are documented in `docs/odt-index-format.md`.
+The proposed database redesign for parsed references and cross-references is documented in `docs/reference-schema-design.md`.
+
+---
+
 ## Environment Variables
 
 | Variable        | Default                          | Description                           |
@@ -111,10 +142,20 @@ See `.env.example` for a template.
 
 ## Loading Sample Data (Optional)
 
-You can create objects directly in the Django Admin UI, or load fixtures:
+You can create objects directly in the Django Admin UI, or load fixtures.
+`WorkTitle` and `WorkContribution` use externally supplied string primary keys rather than auto-incrementing integers, so imported records should include explicit IDs for those models.
+The project is configured to search the top-level `fixtures/` directory automatically, so you can refer to fixture names without a path or file extension:
 
 ```bash
-python manage.py loaddata <fixture_file>.json
+python manage.py loaddata Agent
+python manage.py loaddata Work WorkTitle Manifestation
+```
+
+If both `Agent.json` and `Agent.xml` exist, `python manage.py loaddata Agent` is ambiguous and Django will abort the load. In that case, specify the format explicitly:
+
+```bash
+python manage.py loaddata Agent.json
+python manage.py loaddata Agent.xml
 ```
 
 ---
