@@ -30,3 +30,7 @@ staticfiles/
 .vscode/
 *.swp
 *.swo
+
+# intermediate data files
+odt-parse-errors.txt
+parsed-index.json

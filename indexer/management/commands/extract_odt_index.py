@@ -7,7 +7,6 @@ from django.core.management.base import BaseCommand, CommandError
 
 from indexer.odt_index_parser import OdtIndexParseError, iter_index_file_paths, parse_index_paragraph, read_odt_paragraphs
 
-
 class Command(BaseCommand):
     help = 'Extract index entries from ODT files named Index*.odt or Sachregister*.odt.'
 
@@ -53,9 +52,11 @@ class Command(BaseCommand):
             paragraphs = read_odt_paragraphs(odt_path)
             for paragraph_number, paragraph in enumerate(paragraphs, start=1):
                 if ':\t' not in paragraph:
+                    message = _format_error_record(odt_path, paragraph_number, paragraph, 'Missing colon-tab separator')
+                    errors.append(message)
                     continue
                 try:
-                    parsed = parse_index_paragraph(paragraph)
+                    parsed = parse_index_paragraph(paragraph, odt_path.name)
                 except OdtIndexParseError as exc:
                     message = _format_error_record(odt_path, paragraph_number, paragraph, str(exc))
                     if fail_on_error:

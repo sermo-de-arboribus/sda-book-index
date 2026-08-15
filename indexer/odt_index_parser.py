@@ -13,8 +13,10 @@ TEXT_NS = 'urn:oasis:names:tc:opendocument:xmlns:text:1.0'
 OFFICE_NS = 'urn:oasis:names:tc:opendocument:xmlns:office:1.0'
 NS = {'office': OFFICE_NS, 'text': TEXT_NS}
 
+INDEX_TYPE_PERSON = 'P'
+INDEX_TYPE_SUBJECT = 'S'
 ODT_FILENAME_PATTERNS = ('Index*.odt', 'Sachregister*.odt')
-REFERENCE_TYPE_CODES = {'T', 'B', 'F', 'A', 'Z'}
+REFERENCE_TYPE_CODES = {'A', 'B', 'F', 'N', 'T', 'V', 'Z'}
 PAGE_RELATION_BEFORE = 'before'
 PAGE_RELATION_AFTER = 'after'
 PAGE_SCOPE_PASSIM = 'passim'
@@ -123,6 +125,7 @@ class ParsedLemmaLevel:
 
 @dataclass(frozen=True)
 class ParsedIndexEntry:
+    index_type: str
     raw_paragraph: str
     raw_lemma: str
     levels: tuple[ParsedLemmaLevel, ...]
@@ -130,6 +133,7 @@ class ParsedIndexEntry:
 
     def to_dict(self) -> dict:
         return {
+            'index_type': self.index_type,
             'raw_paragraph': self.raw_paragraph,
             'raw_lemma': self.raw_lemma,
             'levels': [level.to_dict() for level in self.levels],
@@ -169,11 +173,11 @@ def parse_odt_file(odt_path: Path) -> list[ParsedIndexEntry]:
     for paragraph in read_odt_paragraphs(odt_path):
         if ':\t' not in paragraph:
             continue
-        entries.append(parse_index_paragraph(paragraph))
+        entries.append(parse_index_paragraph(paragraph, odt_path.name))
     return entries
 
 
-def parse_index_paragraph(paragraph: str) -> ParsedIndexEntry:
+def parse_index_paragraph(paragraph: str, filename: str) -> ParsedIndexEntry:
     raw_paragraph = _normalize_whitespace(paragraph).strip()
     match = re.search(r':\t(?=[^\t]*$)', raw_paragraph)
     if match is None:
@@ -188,7 +192,9 @@ def parse_index_paragraph(paragraph: str) -> ParsedIndexEntry:
 
     levels = tuple(parse_lemma_levels(raw_lemma))
     references = tuple(parse_references(raw_references))
+    index_type = INDEX_TYPE_PERSON if filename.startswith('Index') else INDEX_TYPE_SUBJECT
     return ParsedIndexEntry(
+        index_type=index_type,
         raw_paragraph=raw_paragraph,
         raw_lemma=raw_lemma,
         levels=levels,
