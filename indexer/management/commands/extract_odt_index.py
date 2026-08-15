@@ -5,7 +5,13 @@ from pathlib import Path
 
 from django.core.management.base import BaseCommand, CommandError
 
-from indexer.odt_index_parser import OdtIndexParseError, iter_index_file_paths, parse_index_paragraph, read_odt_paragraphs
+from indexer.odt_index_parser import (
+    OdtIndexParseError,
+    build_document_dictionary,
+    iter_index_file_paths,
+    parse_index_paragraph,
+    read_odt_paragraphs,
+)
 
 class Command(BaseCommand):
     help = 'Extract index entries from ODT files named Index*.odt or Sachregister*.odt.'
@@ -46,6 +52,7 @@ class Command(BaseCommand):
             raise CommandError(f'No matching ODT files found under {source_dir}')
 
         entries: list[dict] = []
+        parsed_entries: list = []
         errors: list[str] = []
 
         for odt_path in odt_files:
@@ -64,6 +71,7 @@ class Command(BaseCommand):
                     errors.append(message)
                     continue
 
+                parsed_entries.append(parsed)
                 entries.append(
                     {
                         'source_file': odt_path.name,
@@ -78,12 +86,15 @@ class Command(BaseCommand):
             if limit is not None and len(entries) >= limit:
                 break
 
+        documents, serialized_entries = build_document_dictionary(parsed_entries)
         payload = {
             'source_dir': str(source_dir),
             'source_files': [str(path) for path in odt_files],
-            'entry_count': len(entries),
+            'document_count': len(documents),
+            'entry_count': len(serialized_entries),
             'error_count': len(errors),
-            'entries': entries,
+            'documents': documents,
+            'entries': serialized_entries,
         }
 
         json_text = json.dumps(payload, ensure_ascii=False, indent=2 if pretty else None)

@@ -78,17 +78,13 @@ class PageLocator:
 @dataclass(frozen=True)
 class ParsedPageReference:
     kind: str
-    raw: str
     document: str
-    pages_raw: str
     page_locators: tuple[PageLocator, ...]
 
     def to_dict(self) -> dict:
         return {
             'kind': self.kind,
-            'raw': self.raw,
             'document': self.document,
-            'pages_raw': self.pages_raw,
             'page_locators': [locator.to_dict() for locator in self.page_locators],
         }
 
@@ -97,7 +93,6 @@ class ParsedPageReference:
 class ParsedCrossReference:
     kind: str
     marker: str
-    raw: str
     target_raw: str
     target_levels: tuple['ParsedLemmaLevel', ...]
 
@@ -105,7 +100,6 @@ class ParsedCrossReference:
         return {
             'kind': self.kind,
             'marker': self.marker,
-            'raw': self.raw,
             'target_raw': self.target_raw,
             'target_levels': [level.to_dict() for level in self.target_levels],
         }
@@ -126,7 +120,6 @@ class ParsedLemmaLevel:
 @dataclass(frozen=True)
 class ParsedIndexEntry:
     index_type: str
-    raw_paragraph: str
     raw_lemma: str
     levels: tuple[ParsedLemmaLevel, ...]
     references: tuple['ParsedReference', ...]
@@ -134,7 +127,6 @@ class ParsedIndexEntry:
     def to_dict(self) -> dict:
         return {
             'index_type': self.index_type,
-            'raw_paragraph': self.raw_paragraph,
             'raw_lemma': self.raw_lemma,
             'levels': [level.to_dict() for level in self.levels],
             'references': [reference.to_dict() for reference in self.references],
@@ -177,7 +169,7 @@ def parse_odt_file(odt_path: Path) -> list[ParsedIndexEntry]:
     return entries
 
 
-def parse_index_paragraph(paragraph: str, filename: str) -> ParsedIndexEntry:
+def parse_index_paragraph(paragraph: str, filename: str = '') -> ParsedIndexEntry:
     raw_paragraph = _normalize_whitespace(paragraph).strip()
     match = re.search(r':\t(?=[^\t]*$)', raw_paragraph)
     if match is None:
@@ -195,7 +187,6 @@ def parse_index_paragraph(paragraph: str, filename: str) -> ParsedIndexEntry:
     index_type = INDEX_TYPE_PERSON if filename.startswith('Index') else INDEX_TYPE_SUBJECT
     return ParsedIndexEntry(
         index_type=index_type,
-        raw_paragraph=raw_paragraph,
         raw_lemma=raw_lemma,
         levels=levels,
         references=references,
@@ -251,11 +242,9 @@ def parse_reference(reference_text: str, fallback_document: str | None = None) -
             return parse_cross_reference(reference_text, prefix, kind)
 
     match = re.match(
-        r'^(?P<document>.+),\s*(?:(?P<relation>nach|vor)\s+)?(?P<marker>S\.|Sp\.|Abb\.)\s*(?P<pages>.+)$',
+        r'^(?P<document>.+),\s*(?:(?P<relation>nach|vor)\s+)?((?P<marker>S\.|Sp\.|Abb\.)\s*(?P<pages>.+)|(?P<passim>passim(?:\s*,\s*.+)?))$',
         reference_text,
     )
-    if match is None:
-        match = re.match(r'^(?P<document>.+),\s*(?P<pages>passim(?:\s*,\s*.+)?)$', reference_text)
     if match is None and fallback_document is not None:
         continuation = re.match(
             r'^(?:(?P<relation>nach|vor)\s+)?(?P<marker>S\.|Sp\.|Abb\.)\s*(?P<pages>.+)$',
@@ -266,7 +255,10 @@ def parse_reference(reference_text: str, fallback_document: str | None = None) -
     if match is None:
         raise OdtIndexParseError(f'Missing page marker in reference: {reference_text!r}')
 
-    pages_raw = match.group('pages').strip()
+    pages_raw = match.group('pages')
+    if pages_raw is None and match.group('passim') is not None:
+        pages_raw = match.group('passim')
+    pages_raw = pages_raw.strip() if pages_raw else ''
     default_relation = _parse_page_relation(match.groupdict().get('relation'))
     default_unit = _parse_locator_unit(match.groupdict().get('marker'))
     locators = tuple(
@@ -274,9 +266,8 @@ def parse_reference(reference_text: str, fallback_document: str | None = None) -
     )
     return ParsedPageReference(
         kind='page',
-        raw=(f'{fallback_document}, {reference_text}' if 'document' not in match.groupdict() and fallback_document else reference_text),
+        # raw=(f'{fallback_document}, {reference_text}' if 'document' not in match.groupdict() and fallback_document else reference_text),
         document=(match.groupdict().get('document') or fallback_document or '').strip(),
-        pages_raw=pages_raw,
         page_locators=locators,
     )
 
@@ -296,7 +287,6 @@ def parse_cross_reference(reference_text: str, marker: str, kind: str) -> Parsed
     return ParsedCrossReference(
         kind=kind,
         marker=marker.strip(),
-        raw=reference_text,
         target_raw=target_raw,
         target_levels=tuple(parse_lemma_levels(target_raw)),
     )
@@ -392,8 +382,38 @@ def parse_reference_types(note: str, has_numeric_locator: bool) -> tuple[str, ..
     return ()
 
 
+def build_document_dictionary(entries: Iterable[ParsedIndexEntry]) -> tuple[dict[str, dict], list[dict]]:
+    documents: dict[str, dict] = {}
+    document_lookup: dict[str, int] = {}
+    serialized_entries: list[dict] = []
+
+    for entry in entries:
+        payload = entry.to_dict()
+        references: list[dict] = []
+        for reference in payload.get('references', []):
+            document_label = reference.get('document')
+            if isinstance(document_label, str):
+                normalized = _normalize_document_key(document_label)
+                if not normalized:
+                    references.append(reference)
+                    continue
+                if normalized not in document_lookup:
+                    key = str(len(documents))
+                    documents[key] = {'label': document_label, 'normalized_label': normalized}
+                    document_lookup[normalized] = len(documents) - 1
+                reference['document'] = document_lookup[normalized]
+            references.append(reference)
+        payload['references'] = references
+        serialized_entries.append(payload)
+
+    # Sort documents by their normalized labels for consistent output
+    sorted_documents = dict(sorted(documents.items(), key=lambda item: item[1]['normalized_label']))
+    return sorted_documents, serialized_entries
+
+
 def dump_entries_as_json(entries: Iterable[ParsedIndexEntry], pretty: bool = False) -> str:
-    payload = [entry.to_dict() for entry in entries]
+    documents, serialized_entries = build_document_dictionary(entries)
+    payload = {'documents': documents, 'entries': serialized_entries}
     if pretty:
         return json.dumps(payload, ensure_ascii=False, indent=2)
     return json.dumps(payload, ensure_ascii=False)
@@ -492,6 +512,16 @@ def _normalize_whitespace(value: str) -> str:
     value = re.sub(r'\s*\t\s*', '\t', value)
     value = re.sub(r'[ \r\n\f\v]+', ' ', value)
     return value
+
+
+def _normalize_document_key(value: str) -> str:
+    normalized = value.casefold()
+    for quote in ('“', '”', '„', '‟', '’', '‘', '’', '"', "'", '«', '»'):
+        normalized = normalized.replace(quote, '')
+    normalized = normalized.replace('-', ' ')
+    normalized = re.sub(r'[^\w\s]+', ' ', normalized, flags=re.UNICODE)
+    normalized = re.sub(r'\s+', ' ', normalized)
+    return normalized.strip()
 
 
 def _resolve_shorthand_end(start: int, end_text: str) -> int:

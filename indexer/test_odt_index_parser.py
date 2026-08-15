@@ -7,6 +7,7 @@ from pathlib import Path
 
 from indexer.odt_index_parser import (
     OdtIndexParseError,
+    build_document_dictionary,
     iter_index_file_paths,
     parse_index_paragraph,
     parse_page_locator,
@@ -42,7 +43,6 @@ class OdtIndexParserTests(unittest.TestCase):
             reference.document,
             'Arnoldi, E. F.: „Marc Chagall“, in: Fassmann, K. (Hg.): „Die Großen“, Bd. X',
         )
-        self.assertEqual(reference.pages_raw, '370, 376')
         self.assertEqual(reference.page_locators[1].page_start, 376)
         self.assertEqual(reference.page_locators[0].effective_page_start_relation, 'on')
 
@@ -92,15 +92,38 @@ class OdtIndexParserTests(unittest.TestCase):
 
         self.assertEqual(reference.kind, 'page')
         self.assertEqual(reference.document, 'Aggeler, J.: „Der Weg von Kleists Alkmene“')
-        self.assertEqual(reference.pages_raw, 'passim')
         self.assertEqual(reference.page_locators[0].page_scope, 'passim')
         self.assertEqual(reference.page_locators[0].reference_types, ('T',))
+
+    def test_build_document_dictionary_normalizes_and_deduplicates_documents(self):
+        entries = (
+            parse_index_paragraph('A:	Herder, J. G.: „Sämmtliche Werke“, S. 33'),
+            parse_index_paragraph('B:	Herder, J. G.: "Sämmtliche Werke", S. 20; Herder, J. G.: "Sämmtliche Werke", Abb. 12'),
+        )
+
+        documents, serialized_entries = build_document_dictionary(entries)
+
+        self.assertEqual(list(documents.keys()), ['0'])
+        self.assertEqual(documents['0']['label'], 'Herder, J. G.: „Sämmtliche Werke“')
+        self.assertEqual(serialized_entries[0]['references'][0]['document'], 0)
+        self.assertEqual(serialized_entries[1]['references'][0]['document'], 0)
+        self.assertEqual(serialized_entries[1]['references'][1]['document'], 0)
 
     def test_parse_reference_supports_passim_with_trailing_note(self):
         reference = parse_reference('Plautus: „Amphitruo“, passim, bes. 147ff (Nachwort)')
 
         self.assertEqual(reference.page_locators[0].page_scope, 'passim')
         self.assertEqual(reference.page_locators[1].raw, 'bes. 147ff (Nachwort)')
+
+    def test_parse_reference_ignores_initials_before_title_then_passim(self):
+        entry = parse_index_paragraph(
+            'Komplexitätstheorie:\tAaronson, S.: “Why Philosophers Should Care about Computational Complexity”, passim; '
+            'Fröba/Wassermann: „Die bedeutendsten Mathematiker“, S. 250; '
+            'Sipser, M.: „Introduction to the Theory of Computation“, S. 2, 155/56, 253'
+        )
+
+        self.assertEqual(entry.references[0].document, 'Aaronson, S.: “Why Philosophers Should Care about Computational Complexity”')
+        self.assertEqual(entry.references[0].page_locators[0].page_scope, 'passim')
 
     def test_parse_reference_supports_cross_reference(self):
         reference = parse_reference('s. Abd al-Karim, Mohammed')
@@ -134,7 +157,6 @@ class OdtIndexParserTests(unittest.TestCase):
     def test_parse_reference_removes_soft_hyphen_from_raw_and_document(self):
         reference = parse_reference('Her\u00adder, J. G.: „Sämmt\u00adliche Werke“, S. 33(F)')
 
-        self.assertEqual(reference.raw, 'Herder, J. G.: „Sämmtliche Werke“, S. 33(F)')
         self.assertEqual(reference.document, 'Herder, J. G.: „Sämmtliche Werke“')
 
     def test_parse_page_locator_supports_ranges_and_shorthand(self):
@@ -251,11 +273,6 @@ class OdtIndexParserTests(unittest.TestCase):
         self.assertEqual(len(entry.references), 1)
         self.assertEqual(entry.references[0].kind, 'see')
         self.assertEqual(entry.references[0].target_raw, 'Andromeda; Perseus und')
-
-    def test_parse_index_paragraph_removes_soft_hyphen_from_raw_paragraph(self):
-        entry = parse_index_paragraph('Aglaja:\tHer\u00adder, J. G.: „Sämmt\u00adliche Werke“, S. 33')
-
-        self.assertEqual(entry.raw_paragraph, 'Aglaja:\tHerder, J. G.: „Sämmtliche Werke“, S. 33')
 
     def test_page_locator_dict_omits_default_on_relation(self):
         locator = parse_page_locator('64(B)')
