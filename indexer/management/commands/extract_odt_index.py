@@ -86,7 +86,7 @@ class Command(BaseCommand):
             if limit is not None and len(entries) >= limit:
                 break
 
-        documents, serialized_entries = build_document_dictionary(parsed_entries)
+        documents, serialized_entries = build_document_dictionary(parsed_entries, error_sink=errors)
         payload = {
             'source_dir': str(source_dir),
             'source_files': [str(path) for path in odt_files],

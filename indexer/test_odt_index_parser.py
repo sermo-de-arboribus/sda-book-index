@@ -105,9 +105,60 @@ class OdtIndexParserTests(unittest.TestCase):
 
         self.assertEqual(list(documents.keys()), ['0'])
         self.assertEqual(documents['0']['label'], 'Herder, J. G.: „Sämmtliche Werke“')
-        self.assertEqual(serialized_entries[0]['references'][0]['document'], 0)
-        self.assertEqual(serialized_entries[1]['references'][0]['document'], 0)
-        self.assertEqual(serialized_entries[1]['references'][1]['document'], 0)
+        self.assertEqual(serialized_entries[0]['references'][0]['document'], '0')
+        self.assertEqual(serialized_entries[1]['references'][0]['document'], '0')
+        self.assertEqual(serialized_entries[1]['references'][1]['document'], '0')
+
+    def test_build_document_dictionary_splits_in_document_reference_into_base_and_part(self):
+        entry = parse_index_paragraph(
+            'A:	Arnoldi, E. F.: „Marc Chagall“, in: Fassmann, K. (Hg.): „Die Großen“, Bd. X, S. 370, 376'
+        )
+
+        documents, serialized_entries = build_document_dictionary([entry])
+
+        self.assertEqual(list(documents.keys()), ['1', '0'])
+        self.assertEqual(documents['0']['label'], 'Fassmann, K. (Hg.): „Die Großen“, Bd. X')
+        self.assertEqual(documents['1']['label'], 'Arnoldi, E. F.: „Marc Chagall“')
+        self.assertEqual(documents['1']['part_of'], '0')
+        self.assertEqual(serialized_entries[0]['references'][0]['document'], '1')
+
+    def test_build_document_dictionary_replaces_ders_with_author_from_main_document(self):
+        entry = parse_index_paragraph(
+            'A:\tAji, A.: „The Abandonment of Lucie Sebetka in The Joke“, in: Ders.: „Milan Kundera and the Art of Fiction“, '
+            'S. 42'
+        )
+
+        errors = []
+        documents, serialized_entries = build_document_dictionary([entry], error_sink=errors)
+
+        self.assertEqual(list(documents.keys()), ['0', '1'])
+        self.assertEqual(documents['0']['label'], 'Aji, A.: „Milan Kundera and the Art of Fiction“')
+        self.assertEqual(documents['1']['label'], 'Aji, A.: „The Abandonment of Lucie Sebetka in The Joke“')
+        self.assertEqual(documents['1']['part_of'], '0')
+        self.assertEqual(serialized_entries[0]['references'][0]['document'], '1')
+        self.assertEqual(errors, [])
+
+    def test_build_document_dictionary_strips_leading_in_prefix_from_base_label(self):
+        labels = ('in: Aji, A.: „Milan Kundera and the Art of Fiction“', 'Aji, A.: „The Abandonment of Lucie Sebetka in The Joke“')
+        documents, serialized_entries = build_document_dictionary([
+            parse_index_paragraph('A:\tAji, A.: „The Abandonment of Lucie Sebetka in The Joke“, in: Aji, A.: „Milan Kundera and the Art of Fiction“, S. 42')
+        ])
+
+        self.assertEqual(documents['0']['label'], 'Aji, A.: „Milan Kundera and the Art of Fiction“')
+        self.assertEqual(documents['1']['label'], 'Aji, A.: „The Abandonment of Lucie Sebetka in The Joke“')
+        self.assertEqual(documents['1']['part_of'], '0')
+        self.assertNotIn('in: Aji, A.', documents['0']['label'])
+        self.assertNotIn('in: Aji, A.', documents['1']['label'])
+
+    def test_build_document_dictionary_logs_unresolved_ders_placeholder(self):
+        entry = parse_index_paragraph('A:\tDers.: „Milan Kundera and the Art of Fiction“, S. 42')
+
+        errors = []
+        documents, serialized_entries = build_document_dictionary([entry], error_sink=errors)
+
+        self.assertEqual(documents['0']['label'], 'Ders.: „Milan Kundera and the Art of Fiction“')
+        self.assertEqual(serialized_entries[0]['references'][0]['document'], '0')
+        self.assertTrue(any('Ders.' in message for message in errors))
 
     def test_parse_reference_supports_passim_with_trailing_note(self):
         reference = parse_reference('Plautus: „Amphitruo“, passim, bes. 147ff (Nachwort)')

@@ -382,10 +382,34 @@ def parse_reference_types(note: str, has_numeric_locator: bool) -> tuple[str, ..
     return ()
 
 
-def build_document_dictionary(entries: Iterable[ParsedIndexEntry]) -> tuple[dict[str, dict], list[dict]]:
+def build_document_dictionary(
+    entries: Iterable[ParsedIndexEntry],
+    *,
+    error_sink: list[str] | None = None,
+) -> tuple[dict[str, dict], list[dict]]:
     documents: dict[str, dict] = {}
     document_lookup: dict[str, int] = {}
     serialized_entries: list[dict] = []
+
+    def ensure_document(label: str, *, part_of: str | None = None, context_label: str | None = None) -> str:
+        label = _resolve_ders_reference(label, context=context_label, error_sink=error_sink)
+        normalized = _normalize_document_key(label)
+        if not normalized:
+            raise ValueError(f'Cannot normalize empty document label: {label!r}')
+
+        lookup_key = normalized if part_of is None else f'{normalized}::{part_of}'
+        if lookup_key not in document_lookup:
+            key = str(len(documents))
+            payload = {'label': label, 'normalized_label': normalized}
+            if part_of is not None:
+                payload['part_of'] = part_of
+            documents[key] = payload
+            document_lookup[lookup_key] = len(documents) - 1
+
+        key = str(document_lookup[lookup_key])
+        if part_of is not None and documents.get(key, {}).get('part_of') is None:
+            documents[key]['part_of'] = part_of
+        return key
 
     for entry in entries:
         payload = entry.to_dict()
@@ -393,15 +417,14 @@ def build_document_dictionary(entries: Iterable[ParsedIndexEntry]) -> tuple[dict
         for reference in payload.get('references', []):
             document_label = reference.get('document')
             if isinstance(document_label, str):
-                normalized = _normalize_document_key(document_label)
-                if not normalized:
-                    references.append(reference)
-                    continue
-                if normalized not in document_lookup:
-                    key = str(len(documents))
-                    documents[key] = {'label': document_label, 'normalized_label': normalized}
-                    document_lookup[normalized] = len(documents) - 1
-                reference['document'] = document_lookup[normalized]
+                base_label, part_label = _split_document_label(document_label)
+                if part_label is not None:
+                    base_label = _resolve_ders_reference(base_label, context=part_label, error_sink=error_sink)
+                    base_key = ensure_document(base_label)
+                    part_key = ensure_document(part_label, part_of=base_key, context_label=base_label)
+                    reference['document'] = part_key
+                else:
+                    reference['document'] = ensure_document(document_label)
             references.append(reference)
         payload['references'] = references
         serialized_entries.append(payload)
@@ -514,6 +537,30 @@ def _normalize_whitespace(value: str) -> str:
     return value
 
 
+def _resolve_ders_reference(document_label: str, *, context: str | None = None, error_sink: list[str] | None = None) -> str:
+    if 'Ders.' not in document_label:
+        return document_label
+
+    author = _extract_author_prefix(context or document_label)
+    if author is None:
+        message = f'Unable to resolve Ders. placeholder in document label: {document_label!r}'
+        if error_sink is not None:
+            error_sink.append(message)
+        return document_label
+
+    result = re.sub(r'(?<!\w)Ders\.(?!\w)', author, document_label)
+    return result.strip()
+
+
+def _extract_author_prefix(document_label: str) -> str | None:
+    if ':' not in document_label:
+        return None
+    author = document_label.split(':', 1)[0].strip()
+    if not author or author.casefold() == 'ders.':
+        return None
+    return author
+
+
 def _normalize_document_key(value: str) -> str:
     normalized = value.casefold()
     for quote in ('“', '”', '„', '‟', '’', '‘', '’', '"', "'", '«', '»'):
@@ -522,6 +569,23 @@ def _normalize_document_key(value: str) -> str:
     normalized = re.sub(r'[^\w\s]+', ' ', normalized, flags=re.UNICODE)
     normalized = re.sub(r'\s+', ' ', normalized)
     return normalized.strip()
+
+
+def _split_document_label(document_label: str) -> tuple[str, str | None]:
+    cleaned = document_label.strip()
+    if cleaned.lower().startswith('in:'):
+        cleaned = cleaned[3:].strip()
+
+    separator = ', in:'
+    if separator not in cleaned:
+        return cleaned, None
+
+    before, after = cleaned.split(separator, 1)
+    before = before.strip()
+    after = after.strip()
+    if not before or not after:
+        return cleaned, None
+    return after, before
 
 
 def _resolve_shorthand_end(start: int, end_text: str) -> int:
