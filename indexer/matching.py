@@ -79,6 +79,7 @@ def suggest_manifestation_matches(
         return []
 
     reference_text = reference.raw_document or reference.raw_reference or ''
+    container_text = getattr(reference, 'raw_document_part_of', '') or ''
     candidates: list[ManifestationMatch] = []
     qs = list(candidate_queryset)
 
@@ -86,6 +87,13 @@ def suggest_manifestation_matches(
         score = 0
         details: dict = {}
         title_value = manifestation.canonical_title or ''
+
+        if container_text:
+            container_similarity = _title_similarity(container_text, title_value)
+            if container_similarity:
+                score += min(container_similarity, 40)
+                details['container_similarity'] = container_similarity
+                details['container_title'] = container_text
 
         isbn_score = _isbn_match(reference_text, manifestation)
         if isbn_score:

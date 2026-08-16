@@ -478,6 +478,57 @@ class IndexEntryCrossReferenceModelTests(TestCase):
         self.assertEqual(ref.order, 2)
 
 
+class ReferenceFixtureExportTests(TestCase):
+    def test_build_reference_fixture_rows_from_parsed_payload(self):
+        from .reference_fixtures import build_reference_fixture_rows
+
+        payload = {
+            'documents': {
+                '0': {'label': 'Fassmann, K. (Hg.): „Die Großen“, Bd. X', 'normalized_label': 'fassmann k hg die grossen bd x'},
+                '1': {
+                    'label': 'Arnoldi, E. F.: „Marc Chagall“',
+                    'normalized_label': 'arnoldi e f marc chagall',
+                    'part_of': '0',
+                },
+            },
+            'entries': [
+                {
+                    'source_file': 'Index A.odt',
+                    'paragraph_number': 7,
+                    'raw_lemma': 'Müller, Anna',
+                    'references': [
+                        {
+                            'kind': 'page',
+                            'document': '1',
+                            'page_locators': [
+                                {
+                                    'raw': 'S. 64(B)',
+                                    'page_start': 64,
+                                    'page_end': 64,
+                                    'page_start_relation': '',
+                                    'page_end_relation': '',
+                                    'note': '(B)',
+                                    'reference_types': ['B'],
+                                    'locator_unit': 'page',
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ],
+        }
+
+        rows = build_reference_fixture_rows(payload, manifestation_id=42)
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0]['model'], 'indexer.reference')
+        self.assertEqual(rows[0]['fields']['manifestation'], 42)
+        self.assertEqual(rows[0]['fields']['raw_document'], 'Arnoldi, E. F.: „Marc Chagall“')
+        self.assertEqual(rows[0]['fields']['raw_document_part_of'], 'Fassmann, K. (Hg.): „Die Großen“, Bd. X')
+        self.assertEqual(rows[1]['model'], 'indexer.referencelocator')
+        self.assertEqual(rows[1]['fields']['reference'], rows[0]['pk'])
+        self.assertEqual(rows[1]['fields']['locator_start'], 64)
+
+
 class ManifestationSuggestionModelTests(TestCase):
     def setUp(self):
         self.work = Work.objects.create(
@@ -521,6 +572,29 @@ class ManifestationSuggestionModelTests(TestCase):
         self.assertEqual(suggestions[0].manifestation, self.matching_manifestation)
         self.assertGreaterEqual(suggestions[0].score, 80)
         self.assertEqual(suggestions[0].match_type, 'title')
+
+    def test_suggest_manifestation_matches_uses_parent_document_context(self):
+        parent_reference = Reference.objects.create(
+            manifestation=self.matching_manifestation,
+            raw_document='Marc Chagall',
+            raw_document_part_of='Die Großen',
+            raw_reference='Marc Chagall',
+            page_start=1,
+            page_end=1,
+        )
+        self.matching_manifestation.canonical_title = 'Die Großen'
+        self.matching_manifestation.save(update_fields=['canonical_title'])
+
+        suggestions = suggest_manifestation_matches(
+            parent_reference,
+            Manifestation.objects.filter(pk=self.matching_manifestation.pk),
+            max_candidates=5,
+            min_score=40,
+        )
+
+        self.assertEqual(len(suggestions), 1)
+        self.assertEqual(suggestions[0].manifestation, self.matching_manifestation)
+        self.assertIn('container_similarity', suggestions[0].details)
 
     def test_create_suggestion_row(self):
         suggestion = ManifestationSuggestion.objects.create(

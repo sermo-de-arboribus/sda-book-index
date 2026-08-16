@@ -376,6 +376,7 @@ class Reference(models.Model):
     )
     raw_reference = models.TextField(blank=True)
     raw_document = models.CharField(max_length=1000, blank=True)
+    raw_document_part_of = models.CharField(max_length=1000, blank=True)
     source_file = models.CharField(max_length=255, blank=True)
     source_paragraph_number = models.PositiveIntegerField(null=True, blank=True)
     page_start = models.PositiveIntegerField()
