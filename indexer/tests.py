@@ -2,6 +2,7 @@ from django.core.exceptions import ValidationError
 from django.db import IntegrityError
 from django.test import TestCase
 
+from .matching import normalize_title, suggest_manifestation_matches
 from .models import (
     Agent,
     AgentName,
@@ -12,6 +13,7 @@ from .models import (
     IndexEntryReference,
     Manifestation,
     ManifestationContribution,
+    ManifestationSuggestion,
     ManifestationTitle,
     PersonIdentifier,
     Reference,
@@ -474,5 +476,63 @@ class IndexEntryCrossReferenceModelTests(TestCase):
         )
         self.assertEqual(ref.target_entry, self.target)
         self.assertEqual(ref.order, 2)
+
+
+class ManifestationSuggestionModelTests(TestCase):
+    def setUp(self):
+        self.work = Work.objects.create(
+            slug='suggestion-work', work_type=Work.BOOK, canonical_title='Suggestion Work'
+        )
+        self.matching_manifestation = Manifestation.objects.create(
+            work=self.work,
+            slug='matching-manifestation',
+            canonical_title='Die Belagerung zu Peking. Zur Geschichte des Boxer-Aufstandes',
+            year=1997,
+            publisher='Eichborn',
+            isbn_issn='3-8218-4155-9',
+        )
+        self.unrelated_manifestation = Manifestation.objects.create(
+            work=self.work,
+            slug='unrelated-manifestation',
+            canonical_title='Something Else Entirely',
+            year=2001,
+            publisher='Other',
+        )
+        self.reference = Reference.objects.create(
+            manifestation=self.matching_manifestation,
+            raw_document='Die Belagerung zu Peking. Zur Geschichte des Boxer-Aufstandes',
+            raw_reference='Die Belagerung zu Peking. Zur Geschichte des Boxer-Aufstandes',
+            page_start=1,
+            page_end=1,
+        )
+
+    def test_normalize_title_removes_punctuation_and_case(self):
+        normalized = normalize_title('Die Belagerung zu Peking. Zur Geschichte des Boxer-Aufstandes')
+        self.assertEqual(normalized, 'belagerung peking geschichte boxer aufstandes')
+
+    def test_suggest_manifestation_matches_title(self):
+        suggestions = suggest_manifestation_matches(
+            self.reference,
+            Manifestation.objects.filter(pk__in=[self.matching_manifestation.pk, self.unrelated_manifestation.pk]),
+            max_candidates=5,
+            min_score=60,
+        )
+        self.assertEqual(len(suggestions), 1)
+        self.assertEqual(suggestions[0].manifestation, self.matching_manifestation)
+        self.assertGreaterEqual(suggestions[0].score, 80)
+        self.assertEqual(suggestions[0].match_type, 'title')
+
+    def test_create_suggestion_row(self):
+        suggestion = ManifestationSuggestion.objects.create(
+            reference=self.reference,
+            manifestation=self.matching_manifestation,
+            score=92,
+            match_type='title',
+            status='suggested',
+            details={'matched_title': 'Die Belagerung zu Peking. Zur Geschichte des Boxer-Aufstandes'},
+        )
+        self.assertEqual(suggestion.score, 92)
+        self.assertEqual(suggestion.match_type, 'title')
+        self.assertEqual(suggestion.status, 'suggested')
 
 

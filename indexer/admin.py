@@ -10,6 +10,7 @@ from .models import (
     IndexEntryReference,
     Manifestation,
     ManifestationContribution,
+    ManifestationSuggestion,
     ManifestationTitle,
     PersonIdentifier,
     Reference,
@@ -162,6 +163,14 @@ class ReferenceAdmin(admin.ModelAdmin):
     @admin.display(description='Document')
     def raw_document_preview(self, obj):
         return obj.raw_document or '—'
+
+
+@admin.register(ManifestationSuggestion)
+class ManifestationSuggestionAdmin(admin.ModelAdmin):
+    list_display = ['reference', 'manifestation', 'score', 'match_type', 'status', 'updated_at']
+    list_filter = ['status', 'match_type']
+    search_fields = ['reference__raw_document', 'reference__raw_reference', 'manifestation__canonical_title']
+    autocomplete_fields = ['reference', 'manifestation']
 
 
 @admin.register(IndexEntry)
