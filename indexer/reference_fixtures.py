@@ -48,17 +48,21 @@ def build_reference_fixture_rows(payload: dict[str, Any], *, manifestation_id: i
                 locator.get('raw', '') for locator in locator_payloads if locator.get('raw')
             ) or entry.get('raw_lemma', '')
 
+            safe_document_label = (document_label or entry.get('raw_lemma', ''))[:1000]
+            safe_document_part_of = (document_part_of_label or '')[:1000]
+
             reference_pk = entry_index * 100 + ref_index
             fields = {
                 'manifestation': manifestation_id,
-                'raw_reference': raw_reference,
-                'raw_document': document_label or entry.get('raw_lemma', ''),
-                'raw_document_part_of': document_part_of_label,
+                'raw_document': safe_document_label,
+                'raw_document_part_of': safe_document_part_of,
                 'source_file': entry.get('source_file', ''),
                 'source_paragraph_number': entry.get('paragraph_number'),
                 'page_start': 1,
                 'page_end': 1,
             }
+            if raw_reference and len(raw_reference) <= 1000:
+                fields['raw_reference'] = raw_reference
 
             if locator_payloads:
                 first_locator = locator_payloads[0]

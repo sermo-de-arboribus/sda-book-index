@@ -528,6 +528,47 @@ class ReferenceFixtureExportTests(TestCase):
         self.assertEqual(rows[1]['fields']['reference'], rows[0]['pk'])
         self.assertEqual(rows[1]['fields']['locator_start'], 64)
 
+    def test_build_reference_fixture_rows_omits_oversized_raw_reference_and_truncates_document_text(self):
+        from .reference_fixtures import build_reference_fixture_rows
+
+        payload = {
+            'documents': {
+                '0': {'label': 'Container ' + ('x' * 2000), 'normalized_label': 'container'},
+                '1': {'label': 'Leaf ' + ('y' * 2000), 'normalized_label': 'leaf', 'part_of': '0'},
+            },
+            'entries': [
+                {
+                    'source_file': 'Index A.odt',
+                    'paragraph_number': 9,
+                    'raw_lemma': 'Test lemma',
+                    'references': [
+                        {
+                            'kind': 'page',
+                            'document': '1',
+                            'page_locators': [
+                                {
+                                    'raw': 'S. ' + ('9' * 2000),
+                                    'page_start': 9,
+                                    'page_end': 9,
+                                    'page_start_relation': '',
+                                    'page_end_relation': '',
+                                    'note': '',
+                                    'reference_types': ['T'],
+                                    'locator_unit': 'page',
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ],
+        }
+
+        rows = build_reference_fixture_rows(payload, manifestation_id=42)
+        reference_fields = rows[0]['fields']
+        self.assertNotIn('raw_reference', reference_fields)
+        self.assertLessEqual(len(reference_fields['raw_document']), 1000)
+        self.assertLessEqual(len(reference_fields['raw_document_part_of']), 1000)
+
 
 class ManifestationSuggestionModelTests(TestCase):
     def setUp(self):
