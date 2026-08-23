@@ -10,7 +10,6 @@ from .models import (
     IndexEntryReference,
     Manifestation,
     ManifestationContribution,
-    ManifestationSuggestion,
     ManifestationTitle,
     PersonIdentifier,
     Reference,
@@ -165,19 +164,11 @@ class ReferenceAdmin(admin.ModelAdmin):
         return obj.raw_document or '—'
 
 
-@admin.register(ManifestationSuggestion)
-class ManifestationSuggestionAdmin(admin.ModelAdmin):
-    list_display = ['reference', 'manifestation', 'score', 'match_type', 'status', 'updated_at']
-    list_filter = ['status', 'match_type']
-    search_fields = ['reference__raw_document', 'reference__raw_reference', 'manifestation__canonical_title']
-    autocomplete_fields = ['reference', 'manifestation']
-
-
 @admin.register(IndexEntry)
 class IndexEntryAdmin(admin.ModelAdmin):
     inlines = [IndexEntryLabelInline, IndexEntryReferenceInline, IndexEntryCrossReferenceInline]
-    list_display = ['__str__', 'parent', 'label_preview', 'created_at']
-    list_filter = ['parent']
+    list_display = ['__str__', 'index_type', 'parent', 'label_preview', 'created_at']
+    list_filter = ['index_type', 'parent']
     search_fields = ['labels__label']
     autocomplete_fields = ['parent']
 

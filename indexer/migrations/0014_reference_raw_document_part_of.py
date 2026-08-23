@@ -4,7 +4,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('indexer', '0013_manifestationsuggestion'),
+        ('indexer', '0012_reference_locator_cross_reference'),
     ]
 
     operations = [

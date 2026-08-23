@@ -229,60 +229,6 @@ class Manifestation(models.Model):
         return work_contribs + list(mf_qs)
 
 
-class ManifestationSuggestion(models.Model):
-    """A scored candidate mapping from a parsed reference to a manifestation."""
-
-    STATUS_SUGGESTED = 'suggested'
-    STATUS_CONFIRMED = 'confirmed'
-    STATUS_REJECTED = 'rejected'
-    STATUS_CHOICES = [
-        (STATUS_SUGGESTED, 'Suggested'),
-        (STATUS_CONFIRMED, 'Confirmed'),
-        (STATUS_REJECTED, 'Rejected'),
-    ]
-
-    MATCH_TYPE_TITLE = 'title'
-    MATCH_TYPE_ISBN = 'isbn'
-    MATCH_TYPE_YEAR = 'year'
-    MATCH_TYPE_MANUAL = 'manual'
-    MATCH_TYPE_CHOICES = [
-        (MATCH_TYPE_TITLE, 'Title'),
-        (MATCH_TYPE_ISBN, 'ISBN'),
-        (MATCH_TYPE_YEAR, 'Year'),
-        (MATCH_TYPE_MANUAL, 'Manual'),
-    ]
-
-    reference = models.ForeignKey(
-        'Reference',
-        on_delete=models.CASCADE,
-        related_name='manifestation_suggestions',
-        db_index=True,
-    )
-    manifestation = models.ForeignKey(
-        Manifestation,
-        on_delete=models.CASCADE,
-        related_name='suggestions',
-        db_index=True,
-    )
-    score = models.PositiveSmallIntegerField(default=0)
-    match_type = models.CharField(max_length=20, choices=MATCH_TYPE_CHOICES, default=MATCH_TYPE_TITLE)
-    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_SUGGESTED)
-    details = models.JSONField(default=dict, blank=True)
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
-
-    class Meta:
-        ordering = ['-score', 'manifestation__slug']
-        unique_together = [('reference', 'manifestation')]
-        indexes = [
-            models.Index(fields=['reference', 'status'], name='indexer_ms_ref_status_idx'),
-            models.Index(fields=['manifestation', 'score'], name='indexer_ms_mf_score_idx'),
-        ]
-
-    def __str__(self):
-        return f'{self.reference} → {self.manifestation} ({self.score}%)'
-
-
 class ManifestationTitle(models.Model):
     """A multilingual title for a manifestation (BCP-47 language tag)."""
 
@@ -372,7 +318,12 @@ class Reference(models.Model):
     ]
 
     manifestation = models.ForeignKey(
-        Manifestation, on_delete=models.CASCADE, related_name='references', db_index=True
+        Manifestation,
+        on_delete=models.CASCADE,
+        related_name='references',
+        db_index=True,
+        null=True,
+        blank=True,
     )
     raw_reference = models.TextField(blank=True)
     raw_document = models.CharField(max_length=1000, blank=True)
@@ -407,6 +358,11 @@ class Reference(models.Model):
         return self.page_end_relation or self.RELATION_ON
 
     def __str__(self):
+        if self.manifestation is None:
+            if self.page_start == self.page_end:
+                return f'Unassigned reference p. {self.page_start}'
+            return f'Unassigned reference pp. {self.page_start}–{self.page_end}'
+
         if self.page_start == self.page_end and self.page_start_relation == self.page_end_relation:
             relation_prefix = self._relation_prefix(self.page_start_relation)
             if relation_prefix:
@@ -551,6 +507,20 @@ class ReferenceLocator(models.Model):
 class IndexEntry(models.Model):
     """A hierarchical index heading (up to 3 levels deep)."""
 
+    TYPE_PERSON = 'P'
+    TYPE_SUBJECT = 'S'
+    TYPE_CHOICES = [
+        (TYPE_PERSON, 'Person index'),
+        (TYPE_SUBJECT, 'Subject index'),
+    ]
+
+    index_type = models.CharField(
+        max_length=1,
+        choices=TYPE_CHOICES,
+        null=True,
+        blank=True,
+        db_index=True,
+    )
     parent = models.ForeignKey(
         'self',
         null=True,

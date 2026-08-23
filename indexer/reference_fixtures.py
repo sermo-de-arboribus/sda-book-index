@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -13,24 +14,23 @@ def _as_list(value: Any) -> list[Any]:
     return [value]
 
 
-def build_reference_fixture_rows(payload: dict[str, Any], *, manifestation_id: int | None = None) -> list[dict[str, Any]]:
-    """Build Django fixture rows for Reference and ReferenceLocator objects from parsed ODT output.
-
-    This creates a fixture-friendly payload that can be ingested with `loaddata`, while keeping
-    unresolved manifestion links deliberately unset until manual review.
-
-    The parsed document graph can include hierarchical relationships such as a chapter/article
-    being part of a larger book or container. These are serialized alongside the raw document so
-    later import and matching stages can use the publication context even before a final
-    manifestation-to-reference linkage is confirmed.
-    """
+def _reference_fixture_rows(
+    payload: dict[str, Any],
+    *,
+    manifestation_id: int | None,
+) -> tuple[list[dict[str, Any]], dict[tuple[int, int], int]]:
+    """Build page-reference fixture rows and map parsed positions to Reference PKs."""
     rows: list[dict[str, Any]] = []
+    reference_pks: dict[tuple[int, int], int] = {}
     documents = payload.get('documents', {}) or {}
     entries = payload.get('entries', []) or []
 
     for entry_index, entry in enumerate(entries, start=1):
         references = entry.get('references', []) or []
         for ref_index, reference in enumerate(references, start=1):
+            if reference.get('kind') != 'page':
+                continue
+
             document_label = ''
             document_part_of_label = ''
             document_key = reference.get('document')
@@ -76,6 +76,7 @@ def build_reference_fixture_rows(payload: dict[str, Any], *, manifestation_id: i
                 'pk': reference_pk,
                 'fields': fields,
             })
+            reference_pks[(entry_index, ref_index)] = reference_pk
 
             for locator_index, locator in enumerate(locator_payloads, start=1):
                 locator_fields = {
@@ -88,7 +89,7 @@ def build_reference_fixture_rows(payload: dict[str, Any], *, manifestation_id: i
                     'end_relation': locator.get('page_end_relation', ''),
                     'locator_scope': locator.get('page_scope', ''),
                     'raw_locator': locator.get('raw', ''),
-                    'reference_type_codes': ''.join(locator.get('reference_types', [])) or '',
+                    'reference_type_codes': ''.join(sorted(locator.get('reference_types', []))) or '',
                 }
                 rows.append({
                     'model': 'indexer.referencelocator',
@@ -96,11 +97,136 @@ def build_reference_fixture_rows(payload: dict[str, Any], *, manifestation_id: i
                     'fields': locator_fields,
                 })
 
+    return rows, reference_pks
+
+
+def build_reference_fixture_rows(payload: dict[str, Any], *, manifestation_id: int | None = None) -> list[dict[str, Any]]:
+    """Build Django fixture rows for page-based Reference and ReferenceLocator objects."""
+    rows, _ = _reference_fixture_rows(payload, manifestation_id=manifestation_id)
     return rows
 
 
+def _entry_levels(entry: dict[str, Any]) -> tuple[str, tuple[str, ...]]:
+    index_type = entry.get('index_type')
+    if index_type not in {'P', 'S'}:
+        raise ValueError(f"Index entry has unsupported index_type {index_type!r}.")
+
+    levels = entry.get('levels', []) or []
+    if not 1 <= len(levels) <= 3:
+        raise ValueError('Index entries must contain between one and three levels.')
+
+    labels = tuple(level.get('label', '').strip() for level in levels if isinstance(level, dict))
+    if len(labels) != len(levels) or any(not label for label in labels):
+        raise ValueError('Index entry levels must have non-empty labels.')
+    return index_type, labels
+
+
+def build_index_fixture_rows(payload: dict[str, Any], *, manifestation_id: int | None = None) -> list[dict[str, Any]]:
+    """Build a complete index fixture from parsed ODT output.
+
+    Nodes are shared by index type and complete label path. Parser metadata intentionally remains
+    in the source JSON because IndexEntryLabel has no dedicated metadata field.
+    """
+    entries = payload.get('entries', []) or []
+    index_rows: list[dict[str, Any]] = []
+    label_rows: list[dict[str, Any]] = []
+    entry_reference_rows: list[dict[str, Any]] = []
+    cross_reference_rows: list[dict[str, Any]] = []
+    node_pks: dict[tuple[str, tuple[str, ...]], int] = {}
+    entry_leaf_pks: dict[int, tuple[str, int]] = {}
+    next_index_entry_pk = 1
+    fixture_timestamp = datetime.now(timezone.utc).isoformat()
+
+    for entry_index, entry in enumerate(entries, start=1):
+        index_type, labels = _entry_levels(entry)
+        parent_pk: int | None = None
+        for depth, label in enumerate(labels, start=1):
+            path = labels[:depth]
+            key = (index_type, path)
+            node_pk = node_pks.get(key)
+            if node_pk is None:
+                node_pk = next_index_entry_pk
+                next_index_entry_pk += 1
+                node_pks[key] = node_pk
+                index_rows.append({
+                    'model': 'indexer.indexentry',
+                    'pk': node_pk,
+                    'fields': {
+                        'index_type': index_type,
+                        'parent': parent_pk,
+                        'created_at': fixture_timestamp,
+                        'updated_at': fixture_timestamp,
+                    },
+                })
+                label_rows.append({
+                    'model': 'indexer.indexentrylabel',
+                    'pk': node_pk,
+                    'fields': {
+                        'index_entry': node_pk,
+                        'language': 'de',
+                        'label': label,
+                        'sort_key': '',
+                    },
+                })
+            parent_pk = node_pk
+        entry_leaf_pks[entry_index] = (index_type, parent_pk)
+
+    reference_rows, reference_pks = _reference_fixture_rows(
+        payload,
+        manifestation_id=manifestation_id,
+    )
+
+    next_entry_reference_pk = 1
+    next_cross_reference_pk = 1
+    for entry_index, entry in enumerate(entries, start=1):
+        index_type, source_entry_pk = entry_leaf_pks[entry_index]
+        page_order = 0
+        cross_reference_order = 0
+        for ref_index, reference in enumerate(entry.get('references', []) or [], start=1):
+            if reference.get('kind') == 'page':
+                page_order += 1
+                entry_reference_rows.append({
+                    'model': 'indexer.indexentryreference',
+                    'pk': next_entry_reference_pk,
+                    'fields': {
+                        'index_entry': source_entry_pk,
+                        'reference': reference_pks[(entry_index, ref_index)],
+                        'order': page_order,
+                    },
+                })
+                next_entry_reference_pk += 1
+                continue
+
+            if reference.get('kind') not in {'see', 'see_also', 'compare'}:
+                continue
+
+            cross_reference_order += 1
+            target_levels = reference.get('target_levels', []) or []
+            target_labels = tuple(
+                level.get('label', '').strip()
+                for level in target_levels
+                if isinstance(level, dict)
+            )
+            target_entry_pk = node_pks.get((index_type, target_labels)) if target_labels else None
+            cross_reference_rows.append({
+                'model': 'indexer.indexentrycrossreference',
+                'pk': next_cross_reference_pk,
+                'fields': {
+                    'source_entry': source_entry_pk,
+                    'target_entry': target_entry_pk,
+                    'kind': reference['kind'],
+                    'marker': reference.get('marker', ''),
+                    'target_raw': reference.get('target_raw', ''),
+                    'order': cross_reference_order,
+                },
+            })
+            next_cross_reference_pk += 1
+
+    return index_rows + label_rows + reference_rows + entry_reference_rows + cross_reference_rows
+
+
 def export_reference_fixture(payload: dict[str, Any], *, output_path: str | Path, manifestation_id: int | None = None) -> Path:
-    rows = build_reference_fixture_rows(payload, manifestation_id=manifestation_id)
+    rows = build_index_fixture_rows(payload, manifestation_id=manifestation_id)
     path = Path(output_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(rows, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')

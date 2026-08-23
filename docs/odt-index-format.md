@@ -105,6 +105,16 @@ During extraction, the parser removes Unicode soft hyphens (`U+00AD`) from norma
 
 ## Reference model mapping
 
+## Fixture import mapping
+
+`export_reference_fixtures` produces one Django JSON fixture containing the complete parsed index:
+
+- Every lemma level becomes an `IndexEntry`; its preceding level is assigned as `parent`.
+- Nodes are deduplicated by `(index_type, complete level path)`. The parser's `P` and `S` values are stored in `IndexEntry.index_type`, so identically labelled person and subject paths remain separate.
+- Each node receives a German `IndexEntryLabel` from the parsed `label`. The parser's level `metadata` has no dedicated database field and is therefore not imported yet.
+- Only `page` items create `Reference` and `ReferenceLocator` rows. The deepest level receives each of these through an ordered `IndexEntryReference` row.
+- `see`, `see_also`, and `compare` items create `IndexEntryCrossReference` rows. Target resolution requires an exact full target path in the same index type; otherwise `target_entry` is empty and `target_raw` remains available for manual review.
+
 The Django `Reference` model can represent `vor` and `nach` without storing `on` explicitly:
 
 - empty `page_start_relation` / `page_end_relation` in the database means implicit `on`

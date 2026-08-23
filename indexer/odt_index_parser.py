@@ -395,7 +395,7 @@ def build_document_dictionary(
         label = _resolve_ders_reference(label, context=context_label, error_sink=error_sink)
         normalized = _normalize_document_key(label)
         if not normalized:
-            raise ValueError(f'Cannot normalize empty document label: {label!r}')
+            normalized = label.casefold()
 
         lookup_key = normalized if part_of is None else f'{normalized}::{part_of}'
         if lookup_key not in document_lookup:

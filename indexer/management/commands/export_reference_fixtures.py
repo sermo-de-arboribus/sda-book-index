@@ -9,7 +9,7 @@ from indexer.reference_fixtures import export_reference_fixture
 
 
 class Command(BaseCommand):
-    help = 'Export parsed ODT index JSON into Django fixture rows for Reference and ReferenceLocator.'
+    help = 'Export parsed ODT index JSON into Django fixtures for index entries, references, and cross-references.'
 
     def add_arguments(self, parser):
         parser.add_argument('source_json', type=Path, help='Path to the JSON produced by extract_odt_index.')

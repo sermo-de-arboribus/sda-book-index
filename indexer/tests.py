@@ -1,8 +1,11 @@
+import json
+import tempfile
+
+from django.core.management import call_command
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError
 from django.test import TestCase
 
-from .matching import normalize_title, suggest_manifestation_matches
 from .models import (
     Agent,
     AgentName,
@@ -13,7 +16,6 @@ from .models import (
     IndexEntryReference,
     Manifestation,
     ManifestationContribution,
-    ManifestationSuggestion,
     ManifestationTitle,
     PersonIdentifier,
     Reference,
@@ -479,6 +481,146 @@ class IndexEntryCrossReferenceModelTests(TestCase):
 
 
 class ReferenceFixtureExportTests(TestCase):
+    def test_generated_index_fixture_loads_with_loaddata(self):
+        from .reference_fixtures import build_index_fixture_rows
+
+        payload = {
+            'documents': {'0': {'label': 'Test document'}},
+            'entries': [{
+                'index_type': 'P',
+                'levels': [{'label': 'Aachen', 'metadata': []}],
+                'references': [{
+                    'kind': 'page',
+                    'document': '0',
+                    'page_locators': [{
+                        'raw': 'S. 64',
+                        'page_start': 64,
+                        'page_end': 64,
+                        'reference_types': ['T'],
+                    }],
+                }],
+            }],
+        }
+
+        with tempfile.TemporaryDirectory() as directory:
+            fixture_path = f'{directory}/index.json'
+            with open(fixture_path, 'w', encoding='utf-8') as fixture_file:
+                json.dump(build_index_fixture_rows(payload), fixture_file)
+            call_command('loaddata', fixture_path, verbosity=0)
+
+        entry = IndexEntry.objects.get()
+        self.assertEqual(entry.index_type, IndexEntry.TYPE_PERSON)
+        self.assertEqual(entry.labels.get().label, 'Aachen')
+        self.assertEqual(entry.entry_references.count(), 1)
+        self.assertEqual(Reference.objects.count(), 1)
+
+    def test_build_index_fixture_rows_creates_typed_hierarchy_and_relations(self):
+        from .reference_fixtures import build_index_fixture_rows
+
+        page_reference = {
+            'kind': 'page',
+            'document': '0',
+            'page_locators': [{
+                'raw': 'S. 64',
+                'page_start': 64,
+                'page_end': 64,
+                'reference_types': ['T'],
+            }],
+        }
+        payload = {
+            'documents': {'0': {'label': 'Test document'}},
+            'entries': [
+                {
+                    'index_type': 'P',
+                    'levels': [
+                        {'label': 'Aachen', 'metadata': []},
+                        {'label': 'Hans von', 'metadata': []},
+                        {'label': 'Aufträge Rudolfs II.', 'metadata': []},
+                    ],
+                    'references': [
+                        page_reference,
+                        {
+                            'kind': 'see',
+                            'marker': 's.',
+                            'target_raw': 'Müller',
+                            'target_levels': [{'label': 'Müller', 'metadata': []}],
+                        },
+                    ],
+                },
+                {
+                    'index_type': 'P',
+                    'levels': [{'label': 'Müller', 'metadata': []}],
+                    'references': [page_reference],
+                },
+                {
+                    'index_type': 'P',
+                    'levels': [
+                        {'label': 'Aachen', 'metadata': []},
+                        {'label': 'Hans von', 'metadata': []},
+                        {'label': 'Aufträge Rudolfs II.', 'metadata': []},
+                    ],
+                    'references': [page_reference],
+                },
+                {
+                    'index_type': 'S',
+                    'levels': [{'label': 'Müller', 'metadata': []}],
+                    'references': [],
+                },
+                {
+                    'index_type': 'P',
+                    'levels': [{'label': 'Verweis', 'metadata': []}],
+                    'references': [{
+                        'kind': 'see_also',
+                        'marker': 'siehe auch',
+                        'target_raw': 'Nur Sachbegriff',
+                        'target_levels': [{'label': 'Nur Sachbegriff', 'metadata': []}],
+                    }],
+                },
+                {
+                    'index_type': 'S',
+                    'levels': [{'label': 'Nur Sachbegriff', 'metadata': []}],
+                    'references': [],
+                },
+            ],
+        }
+
+        rows = build_index_fixture_rows(payload)
+        rows_by_model = {}
+        for row in rows:
+            rows_by_model.setdefault(row['model'], []).append(row)
+
+        index_entries = rows_by_model['indexer.indexentry']
+        labels = {row['fields']['label']: row for row in rows_by_model['indexer.indexentrylabel']}
+        self.assertEqual(len(index_entries), 7)
+        self.assertEqual(len(rows_by_model['indexer.indexentrylabel']), 7)
+        self.assertEqual(len(rows_by_model['indexer.reference']), 3)
+        self.assertEqual(len(rows_by_model['indexer.indexentryreference']), 3)
+
+        aachen = labels['Aachen']['fields']['index_entry']
+        hans_von = labels['Hans von']['fields']['index_entry']
+        auftraege = labels['Aufträge Rudolfs II.']['fields']['index_entry']
+        entry_fields = {row['pk']: row['fields'] for row in index_entries}
+        self.assertIsNone(entry_fields[aachen]['parent'])
+        self.assertEqual(entry_fields[hans_von]['parent'], aachen)
+        self.assertEqual(entry_fields[auftraege]['parent'], hans_von)
+        self.assertEqual(entry_fields[aachen]['index_type'], 'P')
+
+        mueller_entries = [
+            row for row in index_entries
+            if any(
+                label['fields']['index_entry'] == row['pk'] and label['fields']['label'] == 'Müller'
+                for label in rows_by_model['indexer.indexentrylabel']
+            )
+        ]
+        self.assertEqual({row['fields']['index_type'] for row in mueller_entries}, {'P', 'S'})
+        person_mueller_pk = next(
+            row['pk'] for row in mueller_entries if row['fields']['index_type'] == 'P'
+        )
+
+        cross_references = rows_by_model['indexer.indexentrycrossreference']
+        self.assertEqual(cross_references[0]['fields']['target_entry'], person_mueller_pk)
+        self.assertIsNone(cross_references[1]['fields']['target_entry'])
+
     def test_build_reference_fixture_rows_from_parsed_payload(self):
         from .reference_fixtures import build_reference_fixture_rows
 
@@ -568,86 +710,5 @@ class ReferenceFixtureExportTests(TestCase):
         self.assertNotIn('raw_reference', reference_fields)
         self.assertLessEqual(len(reference_fields['raw_document']), 1000)
         self.assertLessEqual(len(reference_fields['raw_document_part_of']), 1000)
-
-
-class ManifestationSuggestionModelTests(TestCase):
-    def setUp(self):
-        self.work = Work.objects.create(
-            slug='suggestion-work', work_type=Work.BOOK, canonical_title='Suggestion Work'
-        )
-        self.matching_manifestation = Manifestation.objects.create(
-            work=self.work,
-            slug='matching-manifestation',
-            canonical_title='Die Belagerung zu Peking. Zur Geschichte des Boxer-Aufstandes',
-            year=1997,
-            publisher='Eichborn',
-            isbn_issn='3-8218-4155-9',
-        )
-        self.unrelated_manifestation = Manifestation.objects.create(
-            work=self.work,
-            slug='unrelated-manifestation',
-            canonical_title='Something Else Entirely',
-            year=2001,
-            publisher='Other',
-        )
-        self.reference = Reference.objects.create(
-            manifestation=self.matching_manifestation,
-            raw_document='Die Belagerung zu Peking. Zur Geschichte des Boxer-Aufstandes',
-            raw_reference='Die Belagerung zu Peking. Zur Geschichte des Boxer-Aufstandes',
-            page_start=1,
-            page_end=1,
-        )
-
-    def test_normalize_title_removes_punctuation_and_case(self):
-        normalized = normalize_title('Die Belagerung zu Peking. Zur Geschichte des Boxer-Aufstandes')
-        self.assertEqual(normalized, 'belagerung peking geschichte boxer aufstandes')
-
-    def test_suggest_manifestation_matches_title(self):
-        suggestions = suggest_manifestation_matches(
-            self.reference,
-            Manifestation.objects.filter(pk__in=[self.matching_manifestation.pk, self.unrelated_manifestation.pk]),
-            max_candidates=5,
-            min_score=60,
-        )
-        self.assertEqual(len(suggestions), 1)
-        self.assertEqual(suggestions[0].manifestation, self.matching_manifestation)
-        self.assertGreaterEqual(suggestions[0].score, 80)
-        self.assertEqual(suggestions[0].match_type, 'title')
-
-    def test_suggest_manifestation_matches_uses_parent_document_context(self):
-        parent_reference = Reference.objects.create(
-            manifestation=self.matching_manifestation,
-            raw_document='Marc Chagall',
-            raw_document_part_of='Die Großen',
-            raw_reference='Marc Chagall',
-            page_start=1,
-            page_end=1,
-        )
-        self.matching_manifestation.canonical_title = 'Die Großen'
-        self.matching_manifestation.save(update_fields=['canonical_title'])
-
-        suggestions = suggest_manifestation_matches(
-            parent_reference,
-            Manifestation.objects.filter(pk=self.matching_manifestation.pk),
-            max_candidates=5,
-            min_score=40,
-        )
-
-        self.assertEqual(len(suggestions), 1)
-        self.assertEqual(suggestions[0].manifestation, self.matching_manifestation)
-        self.assertIn('container_similarity', suggestions[0].details)
-
-    def test_create_suggestion_row(self):
-        suggestion = ManifestationSuggestion.objects.create(
-            reference=self.reference,
-            manifestation=self.matching_manifestation,
-            score=92,
-            match_type='title',
-            status='suggested',
-            details={'matched_title': 'Die Belagerung zu Peking. Zur Geschichte des Boxer-Aufstandes'},
-        )
-        self.assertEqual(suggestion.score, 92)
-        self.assertEqual(suggestion.match_type, 'title')
-        self.assertEqual(suggestion.status, 'suggested')
 
 

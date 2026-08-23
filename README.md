@@ -112,9 +112,9 @@ To extract likely legacy `s.` / `siehe` cross-references whose target lemma shou
 python manage.py suggest_bracketed_crossrefs odt-parse-errors.txt --output odt-crossref-bracket-suggestions.txt
 ```
 
-### Export parsed references as Django fixtures
+### Export parsed index data as Django fixtures
 
-The parsed export can be converted into fixture rows for `Reference` and `ReferenceLocator` objects so it can be imported into the database as a staging dataset before manual manifestation matching:
+The parsed export can be converted into fixture rows for `IndexEntry`, `IndexEntryLabel`, `Reference`, `ReferenceLocator`, `IndexEntryReference`, and `IndexEntryCrossReference` objects:
 
 ```bash
 python manage.py export_reference_fixtures parsed-index.json --output fixtures/reference-import.json --manifestation-id 42
@@ -122,21 +122,9 @@ python manage.py export_reference_fixtures parsed-index.json --output fixtures/r
 
 Use `--manifestation-id` only for a temporary staging link. In a real review workflow you usually want to leave the manifestation unresolved until a human confirms the match.
 
-### Generate manifestation matching suggestions
+Each parsed lemma level becomes an `IndexEntry` node; its preceding level becomes the parent. Identical complete paths are reused within an index type. The parsed `P` (person) and `S` (subject) values are stored on `IndexEntry`, so otherwise identical person and subject paths stay distinct. Parsed parenthetical level metadata is retained in `parsed-index.json` but is not yet stored in the database.
 
-Once the parsed references are in the database, generate ranked candidate manifestations for each reference:
-
-```bash
-python manage.py suggest_manifestation_matches --limit 5 --min-score 60 --clear-existing
-```
-
-To limit the run to one specific reference:
-
-```bash
-python manage.py suggest_manifestation_matches --reference-id 123 --limit 5 --min-score 60
-```
-
-This stores scored `ManifestationSuggestion` rows with `score`, `match_type`, and `status`, which can then be reviewed and confirmed in the admin.
+Page references are attached to the deepest node through `IndexEntryReference`. Parsed `see`, `see_also`, and `compare` entries become `IndexEntryCrossReference` rows. A target is linked only when an exact path with the same index type exists; unresolved targets retain their raw target text for review in Django Admin.
 
 The parser treats the final `:\t` sequence in each paragraph as the boundary between lemma and references, distinguishes page-style locator markers `S.`, `Sp.` and `Abb.` from cross-reference markers such as `s.`, `siehe`, `siehe auch`, and `vgl.`, understands anchors like `vor S. 64(B)` and `nach S. 64(B)`, recognizes `passim` as a whole-edition page scope, removes parenthetical lemma metadata from the visible label, strips soft hyphens from normalized text, and captures page reference types such as the implicit `T` plus explicit codes like `B`, `F`, `A`, `Z`, and combinations such as `T+B`.
 
