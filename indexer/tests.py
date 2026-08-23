@@ -591,18 +591,16 @@ class ReferenceFixtureExportTests(TestCase):
 
         index_entries = rows_by_model['indexer.indexentry']
         labels = {row['fields']['label']: row for row in rows_by_model['indexer.indexentrylabel']}
-        self.assertEqual(len(index_entries), 7)
-        self.assertEqual(len(rows_by_model['indexer.indexentrylabel']), 7)
+        self.assertEqual(len(index_entries), 6)
+        self.assertEqual(len(rows_by_model['indexer.indexentrylabel']), 6)
         self.assertEqual(len(rows_by_model['indexer.reference']), 3)
         self.assertEqual(len(rows_by_model['indexer.indexentryreference']), 3)
 
-        aachen = labels['Aachen']['fields']['index_entry']
-        hans_von = labels['Hans von']['fields']['index_entry']
+        aachen = labels['Aachen, Hans von']['fields']['index_entry']
         auftraege = labels['Aufträge Rudolfs II.']['fields']['index_entry']
         entry_fields = {row['pk']: row['fields'] for row in index_entries}
         self.assertIsNone(entry_fields[aachen]['parent'])
-        self.assertEqual(entry_fields[hans_von]['parent'], aachen)
-        self.assertEqual(entry_fields[auftraege]['parent'], hans_von)
+        self.assertEqual(entry_fields[auftraege]['parent'], aachen)
         self.assertEqual(entry_fields[aachen]['index_type'], 'P')
 
         mueller_entries = [

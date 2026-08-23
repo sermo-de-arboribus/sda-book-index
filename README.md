@@ -122,7 +122,7 @@ python manage.py export_reference_fixtures parsed-index.json --output fixtures/r
 
 Use `--manifestation-id` only for a temporary staging link. In a real review workflow you usually want to leave the manifestation unresolved until a human confirms the match.
 
-Each parsed lemma level becomes an `IndexEntry` node; its preceding level becomes the parent. Identical complete paths are reused within an index type. The parsed `P` (person) and `S` (subject) values are stored on `IndexEntry`, so otherwise identical person and subject paths stay distinct. Parsed parenthetical level metadata is retained in `parsed-index.json` but is not yet stored in the database.
+Each parsed lemma level becomes an `IndexEntry` node, but persons and subjects are handled differently. For `P` entries, level 1 and level 2 are combined into one person node (`surname, given name`), and any further level becomes a subordinate node below that person. For `S` entries, the levels remain hierarchical as parsed. Identical complete paths are reused within an index type. The parsed `P` (person) and `S` (subject) values are stored on `IndexEntry`, so otherwise identical person and subject paths stay distinct. Parsed parenthetical level metadata is retained in `parsed-index.json` but is not yet stored in the database.
 
 Page references are attached to the deepest node through `IndexEntryReference`. Parsed `see`, `see_also`, and `compare` entries become `IndexEntryCrossReference` rows. A target is linked only when an exact path with the same index type exists; unresolved targets retain their raw target text for review in Django Admin.
 

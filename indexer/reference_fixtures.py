@@ -121,6 +121,17 @@ def _entry_levels(entry: dict[str, Any]) -> tuple[str, tuple[str, ...]]:
     return index_type, labels
 
 
+def _fixture_levels(index_type: str, labels: tuple[str, ...]) -> tuple[str, ...]:
+    if index_type != 'P':
+        return labels
+
+    if len(labels) == 1:
+        return labels
+
+    person_label = f'{labels[0]}, {labels[1]}'
+    return (person_label, *labels[2:])
+
+
 def build_index_fixture_rows(payload: dict[str, Any], *, manifestation_id: int | None = None) -> list[dict[str, Any]]:
     """Build a complete index fixture from parsed ODT output.
 
@@ -139,9 +150,10 @@ def build_index_fixture_rows(payload: dict[str, Any], *, manifestation_id: int |
 
     for entry_index, entry in enumerate(entries, start=1):
         index_type, labels = _entry_levels(entry)
+        fixture_levels = _fixture_levels(index_type, labels)
         parent_pk: int | None = None
-        for depth, label in enumerate(labels, start=1):
-            path = labels[:depth]
+        for depth, label in enumerate(fixture_levels, start=1):
+            path = fixture_levels[:depth]
             key = (index_type, path)
             node_pk = node_pks.get(key)
             if node_pk is None:
@@ -207,7 +219,7 @@ def build_index_fixture_rows(payload: dict[str, Any], *, manifestation_id: int |
                 for level in target_levels
                 if isinstance(level, dict)
             )
-            target_entry_pk = node_pks.get((index_type, target_labels)) if target_labels else None
+            target_entry_pk = node_pks.get((index_type, _fixture_levels(index_type, target_labels))) if target_labels else None
             cross_reference_rows.append({
                 'model': 'indexer.indexentrycrossreference',
                 'pk': next_cross_reference_pk,
