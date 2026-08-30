@@ -8,6 +8,7 @@ from pathlib import Path
 from indexer.odt_index_parser import (
     OdtIndexParseError,
     build_document_dictionary,
+    infer_sort_keys,
     iter_index_file_paths,
     parse_index_paragraph,
     parse_page_locator,
@@ -302,6 +303,166 @@ class OdtIndexParserTests(unittest.TestCase):
         )
 
         self.assertEqual([level.label for level in entry.levels], ['A Fei', 'Konzerte veranstaltet von'])
+
+    def test_parse_lemma_level_uses_explicit_sort_key_annotation(self):
+        entry = parse_index_paragraph('1000 [Tausend] Tränen:\tBeispiel, A.: „Werk“, S. 1')
+
+        self.assertEqual(entry.raw_lemma, '1000 [Tausend] Tränen')
+        self.assertEqual(entry.levels[0].label, '1000 Tränen')
+        self.assertEqual(entry.levels[0].sort_key, 'Tausend Tränen')
+
+    def test_parse_lemma_level_preserves_ordinary_bracketed_label(self):
+        entry = parse_index_paragraph('[ahmed] (Jazzband):\tBeispiel, A.: „Werk“, S. 1')
+
+        self.assertEqual(entry.levels[0].label, '[ahmed]')
+        self.assertEqual(entry.levels[0].sort_key, '')
+
+    def test_infer_sort_keys_uses_ordered_siblings_for_article(self):
+        entries = [
+            parse_index_paragraph('Ibis:\tBeispiel, A.: „Werk“, S. 1'),
+            parse_index_paragraph('A Journal:\tBeispiel, A.: „Werk“, S. 1'),
+            parse_index_paragraph('Kapitän:\tBeispiel, A.: „Werk“, S. 1'),
+        ]
+
+        inferred, diagnostics = infer_sort_keys(entries)
+
+        self.assertEqual(inferred[1].levels[0].sort_key, 'Journal')
+        self.assertEqual(diagnostics, [])
+
+    def test_infer_sort_keys_splits_comma_free_person_name_after_matching_family_name(self):
+        entries = [
+            parse_index_paragraph('A., Dominique:\tBeispiel, A.: „Werk“, S. 1', 'Index A.odt'),
+            parse_index_paragraph('A Fei:\tBeispiel, A.: „Werk“, S. 1', 'Index A.odt'),
+            parse_index_paragraph('Afanassjew, Alexander:\tBeispiel, A.: „Werk“, S. 1', 'Index A.odt'),
+        ]
+
+        inferred, diagnostics = infer_sort_keys(entries)
+
+        self.assertEqual([level.label for level in inferred[1].levels], ['A', 'Fei'])
+        self.assertEqual([level.sort_key for level in inferred[1].levels], ['A', 'Fei'])
+        self.assertEqual(diagnostics, [])
+
+    def test_infer_sort_keys_ignores_commas_in_person_metadata(self):
+        entries = [
+            parse_index_paragraph('A., Dominique:\tBeispiel, A.: „Werk“, S. 1', 'Index A.odt'),
+            parse_index_paragraph('A Q (Figur, bei Lu Xun):\tBeispiel, A.: „Werk“, S. 1', 'Index A.odt'),
+            parse_index_paragraph('Afanassjew, Alexander:\tBeispiel, A.: „Werk“, S. 1', 'Index A.odt'),
+        ]
+
+        inferred, diagnostics = infer_sort_keys(entries)
+
+        self.assertEqual([level.label for level in inferred[1].levels], ['A', 'Q'])
+        self.assertEqual(inferred[1].levels[0].metadata, ())
+        self.assertEqual(diagnostics, [])
+
+    def test_infer_sort_keys_preserves_sublevels_when_splitting_person_name(self):
+        entries = [
+            parse_index_paragraph('A., Dominique:\tBeispiel, A.: „Werk“, S. 1', 'Index A.odt'),
+            parse_index_paragraph('A Fei; Konzerte veranstaltet von:\tBeispiel, A.: „Werk“, S. 1', 'Index A.odt'),
+        ]
+
+        inferred, diagnostics = infer_sort_keys(entries)
+
+        self.assertEqual(
+            [level.label for level in inferred[1].levels],
+            ['A', 'Fei', 'Konzerte veranstaltet von'],
+        )
+        self.assertEqual(diagnostics, [])
+
+    def test_infer_sort_keys_does_not_exceed_three_levels_when_splitting_person_name(self):
+        entries = [
+            parse_index_paragraph('A., Dominique:\tBeispiel, A.: „Werk“, S. 1', 'Index A.odt'),
+            parse_index_paragraph(
+                'A Fei, Unterlevel; Drittes Level:\tBeispiel, A.: „Werk“, S. 1',
+                'Index A.odt',
+            ),
+        ]
+
+        inferred, diagnostics = infer_sort_keys(entries)
+
+        self.assertEqual([level.label for level in inferred[1].levels], ['A Fei', 'Unterlevel', 'Drittes Level'])
+        self.assertEqual(len(diagnostics), 1)
+
+    def test_infer_sort_keys_expands_mc_prefix(self):
+        entries = [
+            parse_index_paragraph('Mackay:\tBeispiel, A.: „Werk“, S. 1'),
+            parse_index_paragraph('McKinney:\tBeispiel, A.: „Werk“, S. 1'),
+            parse_index_paragraph('Madden:\tBeispiel, A.: „Werk“, S. 1'),
+        ]
+
+        inferred, diagnostics = infer_sort_keys(entries)
+
+        self.assertEqual(inferred[1].levels[0].sort_key, 'MacKinney')
+        self.assertEqual(diagnostics, [])
+
+    def test_infer_sort_keys_removes_punctuation_before_comparison(self):
+        entries = [
+            parse_index_paragraph('Alpha:\tBeispiel, A.: „Werk“, S. 1'),
+            parse_index_paragraph('A. Journal:\tBeispiel, A.: „Werk“, S. 1'),
+            parse_index_paragraph('Beta:\tBeispiel, A.: „Werk“, S. 1'),
+        ]
+
+        inferred, diagnostics = infer_sort_keys(entries)
+
+        self.assertEqual(inferred[1].levels[0].sort_key, 'A Journal')
+        self.assertEqual(diagnostics, [])
+
+    def test_infer_sort_keys_ignores_whitespace_in_order_prefix(self):
+        entries = [
+            parse_index_paragraph('Artmann:\tBeispiel, A.: „Werk“, S. 1'),
+            parse_index_paragraph('The Art of Living:\tBeispiel, A.: „Werk“, S. 1'),
+            parse_index_paragraph('Davis:\tBeispiel, A.: „Werk“, S. 1'),
+        ]
+
+        inferred, diagnostics = infer_sort_keys(entries)
+
+        self.assertEqual(inferred[1].levels[0].sort_key, 'Art of Living')
+        self.assertEqual(diagnostics, [])
+
+    def test_infer_sort_keys_ignores_apostrophized_articles(self):
+        for apostrophe in ("'", '‘'):
+            with self.subTest(apostrophe=apostrophe):
+                entries = [
+                    parse_index_paragraph('Alpha:\tBeispiel, A.: „Werk“, S. 1'),
+                    parse_index_paragraph(f'd{apostrophe}Artois:\tBeispiel, A.: „Werk“, S. 1'),
+                    parse_index_paragraph('Beta:\tBeispiel, A.: „Werk“, S. 1'),
+                ]
+
+                inferred, diagnostics = infer_sort_keys(entries)
+
+                self.assertEqual(inferred[1].levels[0].sort_key, 'Artois')
+                self.assertEqual(diagnostics, [])
+
+    def test_infer_sort_keys_uses_visible_label_when_no_alternative_exists(self):
+        entry = parse_index_paragraph('Abbas:\tBeispiel, A.: „Werk“, S. 1')
+
+        inferred, diagnostics = infer_sort_keys([entry])
+
+        self.assertEqual(inferred[0].levels[0].sort_key, 'Abbas')
+        self.assertEqual(diagnostics, [])
+
+    def test_infer_sort_keys_keeps_ambiguous_article_key_empty(self):
+        entry = parse_index_paragraph('A Journal:\tBeispiel, A.: „Werk“, S. 1')
+
+        inferred, diagnostics = infer_sort_keys([entry])
+
+        self.assertEqual(inferred[0].levels[0].sort_key, '')
+        self.assertEqual(diagnostics[0].reason, 'multiple candidates fit local sibling order')
+
+    def test_infer_sort_keys_expands_st_and_numbers_when_order_is_unambiguous(self):
+        entries = [
+            parse_index_paragraph('Sailor:\tBeispiel, A.: „Werk“, S. 1'),
+            parse_index_paragraph('St. Germain:\tBeispiel, A.: „Werk“, S. 1'),
+            parse_index_paragraph('Saiz:\tBeispiel, A.: „Werk“, S. 1'),
+            parse_index_paragraph('1000 Tränen:\tBeispiel, A.: „Werk“, S. 1'),
+            parse_index_paragraph('Tiber:\tBeispiel, A.: „Werk“, S. 1'),
+        ]
+
+        inferred, diagnostics = infer_sort_keys(entries)
+
+        self.assertEqual(inferred[1].levels[0].sort_key, 'Saint Germain')
+        self.assertEqual(inferred[3].levels[0].sort_key, 'tausend Tränen')
+        self.assertEqual(diagnostics, [])
 
     def test_parse_index_paragraph_with_cross_reference(self):
         entry = parse_index_paragraph('Abd el-Krim:\ts. Abd al-Karim, Mohammed')

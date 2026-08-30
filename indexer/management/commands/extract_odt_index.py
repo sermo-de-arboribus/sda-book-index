@@ -8,6 +8,7 @@ from django.core.management.base import BaseCommand, CommandError
 from indexer.odt_index_parser import (
     OdtIndexParseError,
     build_document_dictionary,
+    infer_sort_keys,
     iter_index_file_paths,
     parse_index_paragraph,
     read_odt_paragraphs,
@@ -51,12 +52,14 @@ class Command(BaseCommand):
         if not odt_files:
             raise CommandError(f'No matching ODT files found under {source_dir}')
 
-        entries: list[dict] = []
+        entry_sources: list[tuple[Path, int]] = []
         parsed_entries: list = []
         errors: list[str] = []
 
         for odt_path in odt_files:
             paragraphs = read_odt_paragraphs(odt_path)
+            file_entries: list = []
+            file_sources: list[tuple[int, str]] = []
             for paragraph_number, paragraph in enumerate(paragraphs, start=1):
                 if ':\t' not in paragraph:
                     message = _format_error_record(odt_path, paragraph_number, paragraph, 'Missing colon-tab separator')
@@ -71,22 +74,33 @@ class Command(BaseCommand):
                     errors.append(message)
                     continue
 
-                parsed_entries.append(parsed)
-                entries.append(
-                    {
-                        'source_file': odt_path.name,
-                        'source_path': str(odt_path),
-                        'paragraph_number': paragraph_number,
-                        **parsed.to_dict(),
-                    }
-                )
-                if limit is not None and len(entries) >= limit:
+                file_entries.append(parsed)
+                file_sources.append((paragraph_number, paragraph))
+                if limit is not None and len(parsed_entries) + len(file_entries) >= limit:
                     break
 
-            if limit is not None and len(entries) >= limit:
+            inferred_entries, diagnostics = infer_sort_keys(file_entries)
+            for diagnostic in diagnostics:
+                paragraph_number, paragraph = file_sources[diagnostic.entry_index]
+                message = _format_error_record(
+                    odt_path,
+                    paragraph_number,
+                    paragraph,
+                    f'Sort key inference failed for level {diagnostic.level_index + 1} '
+                    f'({diagnostic.label!r}): {diagnostic.reason}; '
+                    f'candidates: {", ".join(diagnostic.candidates)!r}',
+                )
+                if fail_on_error:
+                    raise CommandError(message)
+                errors.append(message)
+
+            parsed_entries.extend(inferred_entries)
+            # entry_sources.extend((odt_path, paragraph_number) for paragraph_number, _ in file_sources)
+            if limit is not None and len(parsed_entries) >= limit:
                 break
 
         documents, serialized_entries = build_document_dictionary(parsed_entries, error_sink=errors)
+        
         payload = {
             'source_dir': str(source_dir),
             'source_files': [str(path) for path in odt_files],
@@ -102,7 +116,7 @@ class Command(BaseCommand):
             output_path = output_path.expanduser().resolve()
             output_path.parent.mkdir(parents=True, exist_ok=True)
             output_path.write_text(json_text + ('\n' if pretty else ''), encoding='utf-8')
-            self.stdout.write(self.style.SUCCESS(f'Wrote {len(entries)} entries to {output_path}'))
+            self.stdout.write(self.style.SUCCESS(f'Wrote {len(serialized_entries)} entries to {output_path}'))
         else:
             self.stdout.write(json_text)
 

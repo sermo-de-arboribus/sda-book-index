@@ -6,6 +6,9 @@ from pathlib import Path
 from typing import Any
 
 
+MAX_INDEX_ENTRY_LABEL_LENGTH = 500
+
+
 def _as_list(value: Any) -> list[Any]:
     if value is None:
         return []
@@ -121,15 +124,50 @@ def _entry_levels(entry: dict[str, Any]) -> tuple[str, tuple[str, ...]]:
     return index_type, labels
 
 
-def _fixture_levels(index_type: str, labels: tuple[str, ...]) -> tuple[str, ...]:
+def _level_items(
+    levels: list[dict[str, Any]] | tuple[dict[str, Any], ...],
+) -> tuple[tuple[str, tuple[str, ...], str], ...]:
+    items: list[tuple[str, tuple[str, ...], str]] = []
+    for level in levels:
+        if not isinstance(level, dict):
+            raise ValueError('Index entry levels must be objects.')
+        label = level.get('label', '').strip()
+        if not label:
+            raise ValueError('Index entry levels must have non-empty labels.')
+        metadata_items = level.get('metadata', []) or []
+        metadata = tuple(str(item).strip() for item in metadata_items if str(item).strip())
+        sort_key = str(level.get('sort_key', '')).strip()
+        items.append((label, metadata, sort_key))
+    return tuple(items)
+
+
+def _fixture_levels(
+    index_type: str,
+    level_items: tuple[tuple[str, tuple[str, ...], str], ...],
+) -> tuple[tuple[str, str, tuple[Any, ...]], ...]:
     if index_type != 'P':
-        return labels
+        return tuple((label, sort_key, ('single', metadata)) for label, metadata, sort_key in level_items)
 
-    if len(labels) == 1:
-        return labels
+    if len(level_items) == 1:
+        label, metadata, sort_key = level_items[0]
+        return ((label, sort_key, ('single', metadata)),)
 
-    person_label = f'{labels[0]}, {labels[1]}'
-    return (person_label, *labels[2:])
+    first_label, first_metadata, first_sort_key = level_items[0]
+    second_label, second_metadata, second_sort_key = level_items[1]
+    person_label = f'{first_label}, {second_label}'
+    person_sort_key = f'{first_sort_key}, {second_sort_key}' if first_sort_key and second_sort_key else ''
+    fixture_items: list[tuple[str, str, tuple[Any, ...]]] = [
+        (person_label, person_sort_key, ('person', first_label, first_metadata, second_label, second_metadata))
+    ]
+    fixture_items.extend(
+        (label, sort_key, ('single', metadata))
+        for label, metadata, sort_key in level_items[2:]
+    )
+    return tuple(fixture_items)
+
+
+def _truncate_index_entry_label(label: str) -> str:
+    return label[:MAX_INDEX_ENTRY_LABEL_LENGTH]
 
 
 def build_index_fixture_rows(payload: dict[str, Any], *, manifestation_id: int | None = None) -> list[dict[str, Any]]:
@@ -143,18 +181,22 @@ def build_index_fixture_rows(payload: dict[str, Any], *, manifestation_id: int |
     label_rows: list[dict[str, Any]] = []
     entry_reference_rows: list[dict[str, Any]] = []
     cross_reference_rows: list[dict[str, Any]] = []
-    node_pks: dict[tuple[str, tuple[str, ...]], int] = {}
+    node_pks: dict[tuple[str, tuple[tuple[str, tuple[Any, ...]], ...]], int] = {}
     entry_leaf_pks: dict[int, tuple[str, int]] = {}
     next_index_entry_pk = 1
     fixture_timestamp = datetime.now(timezone.utc).isoformat()
 
     for entry_index, entry in enumerate(entries, start=1):
         index_type, labels = _entry_levels(entry)
-        fixture_levels = _fixture_levels(index_type, labels)
+        level_items = _level_items(entry.get('levels', []) or [])
+        fixture_levels = _fixture_levels(index_type, level_items)
         parent_pk: int | None = None
-        for depth, label in enumerate(fixture_levels, start=1):
+        for depth, (label, sort_key, metadata_identity) in enumerate(fixture_levels, start=1):
             path = fixture_levels[:depth]
-            key = (index_type, path)
+            key = (
+                index_type,
+                tuple((item_label, item_identity) for item_label, _, item_identity in path),
+            )
             node_pk = node_pks.get(key)
             if node_pk is None:
                 node_pk = next_index_entry_pk
@@ -176,8 +218,8 @@ def build_index_fixture_rows(payload: dict[str, Any], *, manifestation_id: int |
                     'fields': {
                         'index_entry': node_pk,
                         'language': 'de',
-                        'label': label,
-                        'sort_key': '',
+                        'label': _truncate_index_entry_label(label),
+                        'sort_key': _truncate_index_entry_label(sort_key),
                     },
                 })
             parent_pk = node_pk
@@ -214,12 +256,14 @@ def build_index_fixture_rows(payload: dict[str, Any], *, manifestation_id: int |
 
             cross_reference_order += 1
             target_levels = reference.get('target_levels', []) or []
-            target_labels = tuple(
-                level.get('label', '').strip()
-                for level in target_levels
-                if isinstance(level, dict)
+            target_items = _level_items(target_levels) if target_levels else ()
+            target_path = _fixture_levels(index_type, target_items) if target_items else ()
+            target_entry_pk = (
+                node_pks.get(
+                    (index_type, tuple((item_label, item_identity) for item_label, _, item_identity in target_path))
+                )
+                if target_path else None
             )
-            target_entry_pk = node_pks.get((index_type, _fixture_levels(index_type, target_labels))) if target_labels else None
             cross_reference_rows.append({
                 'model': 'indexer.indexentrycrossreference',
                 'pk': next_cross_reference_pk,

@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import json
 import re
+import unicodedata
 import zipfile
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Iterable
 from xml.etree import ElementTree
@@ -34,6 +35,13 @@ REFERENCE_PREFIXES = (
     ('vgl. ', 'compare'),
     ('s. ', 'see'),
 )
+SORT_KEY_WINDOW_SIZE = 3
+SORT_KEY_ARTICLES = frozenset({
+    'a', 'an', 'the',
+    'der', 'die', 'das', 'den', 'dem', 'des', 'ein', 'eine', 'einen', 'einem', 'einer', 'eines',
+    'il', 'lo', 'la', 'i', 'gli', 'le', 'un', 'uno', 'una', "l'",
+})
+SORT_KEY_APOSTROPHIZED_ARTICLES = ("d'", 'd‘', 'd’', "l'", 'l‘', 'l’')
 
 
 @dataclass(frozen=True)
@@ -109,11 +117,13 @@ class ParsedCrossReference:
 class ParsedLemmaLevel:
     label: str
     metadata: tuple[str, ...] = ()
+    sort_key: str = ''
 
     def to_dict(self) -> dict:
         return {
             'label': self.label,
             'metadata': list(self.metadata),
+            'sort_key': self.sort_key,
         }
 
 
@@ -138,6 +148,233 @@ class OdtIndexParseError(ValueError):
 
 
 ParsedReference = ParsedPageReference | ParsedCrossReference
+
+
+@dataclass(frozen=True)
+class SortKeyInferenceDiagnostic:
+    entry_index: int
+    level_index: int
+    label: str
+    reason: str
+    candidates: tuple[str, ...]
+
+
+def infer_sort_keys(
+    entries: Iterable[ParsedIndexEntry],
+    *,
+    window_size: int = SORT_KEY_WINDOW_SIZE,
+) -> tuple[list[ParsedIndexEntry], list[SortKeyInferenceDiagnostic]]:
+    """Infer unambiguous keys from ordered direct siblings in one ODT file."""
+    inferred_entries = _split_anchored_person_names(list(entries))
+    diagnostics: list[SortKeyInferenceDiagnostic] = []
+    sibling_groups: dict[tuple[str, int, tuple[str, ...]], list[tuple[int, int]]] = {}
+
+    for entry_index, entry in enumerate(inferred_entries):
+        for level_index, level in enumerate(entry.levels):
+            parent_path = tuple(item.label for item in entry.levels[:level_index])
+            group_key = (entry.index_type, level_index, parent_path)
+            sibling_groups.setdefault(group_key, []).append((entry_index, level_index))
+
+    inferred_levels: dict[tuple[int, int], ParsedLemmaLevel] = {}
+    for sibling_positions in sibling_groups.values():
+        candidate_sets = [
+            _sort_key_candidates(inferred_entries[entry_index].levels[level_index])
+            for entry_index, level_index in sibling_positions
+        ]
+        for position, (entry_index, level_index) in enumerate(sibling_positions):
+            level = inferred_entries[entry_index].levels[level_index]
+            candidates = candidate_sets[position]
+            if level.sort_key:
+                inferred_levels[(entry_index, level_index)] = level
+                continue
+            if len(candidates) == 1:
+                inferred_levels[(entry_index, level_index)] = replace(level, sort_key=candidates[0])
+                continue
+
+            before_sets = candidate_sets[max(0, position - window_size):position]
+            after_sets = candidate_sets[position + 1:position + 1 + window_size]
+            matching = tuple(
+                candidate for candidate in candidates
+                if _candidate_fits_neighbors(candidate, before_sets, after_sets)
+                # if _candidate_fits_neighbors(candidate, before_sets, None)
+            )
+            if len(matching) == 1:
+                inferred_levels[(entry_index, level_index)] = replace(level, sort_key=matching[0])
+                continue
+            # get first letter as a string from before_sets, if all members of before_sets have the same first letter, otherwise none 
+            before_first_letter = None
+            if before_sets:
+                first_letters = [candidate[0] for candidates in before_sets for candidate in candidates if candidate]
+                if first_letters and all(letter == first_letters[0] for letter in first_letters):
+                    before_first_letter = first_letters[0]
+
+            # check if there is a unique element in "matching" variable that starts with the first letter in before_first_letter, case-insensitive
+            sort_key_candidate = [candidate for candidate in matching if candidate and candidate[0].lower() == before_first_letter.lower()] if before_first_letter else []
+            if len(sort_key_candidate) == 1:
+                inferred_levels[(entry_index, level_index)] = replace(level, sort_key=sort_key_candidate[0])
+                continue
+
+            reason = 'no candidate fits local sibling order' if not matching else 'multiple candidates fit local sibling order'
+            diagnostics.append(SortKeyInferenceDiagnostic(
+                entry_index=entry_index,
+                level_index=level_index,
+                label=level.label,
+                reason=reason,
+                candidates=candidates,
+            ))
+
+    for entry_index, entry in enumerate(inferred_entries):
+        levels = tuple(
+            inferred_levels.get((entry_index, level_index), level)
+            for level_index, level in enumerate(entry.levels)
+        )
+        inferred_entries[entry_index] = replace(entry, levels=levels)
+    return inferred_entries, diagnostics
+
+
+def _split_anchored_person_names(entries: list[ParsedIndexEntry]) -> list[ParsedIndexEntry]:
+    result: list[ParsedIndexEntry] = []
+    previous_person: ParsedIndexEntry | None = None
+    for entry in entries:
+        if entry.index_type != INDEX_TYPE_PERSON:
+            result.append(entry)
+            continue
+
+        if previous_person is not None and len(entry.levels) < 3 and ',' not in entry.levels[0].label:
+            first_word, separator, given_name = entry.levels[0].label.partition(' ')
+            previous_family = previous_person.levels[0]
+            previous_key = previous_family.sort_key or previous_family.label
+            if separator and _normalize_sort_key(first_word) == _normalize_sort_key(previous_key):
+                entry = replace(
+                    entry,
+                    levels=(
+                        ParsedLemmaLevel(label=first_word),
+                        ParsedLemmaLevel(label=given_name.strip()),
+                        *entry.levels[1:],
+                    ),
+                )
+        result.append(entry)
+        previous_person = entry
+    return result
+
+
+def _candidate_fits_neighbors(
+    candidate: str,
+    before_sets: list[tuple[str, ...]],
+    after_sets: list[tuple[str, ...]],
+) -> bool:
+    normalized = _sort_key_order_prefix(candidate)
+    return (
+        all(any(_sort_key_order_prefix(other) <= normalized for other in candidates) for candidates in before_sets)
+        and all(any(normalized <= _sort_key_order_prefix(other) for other in candidates) for candidates in after_sets)
+    )
+
+
+def _sort_key_candidates(level: ParsedLemmaLevel) -> tuple[str, ...]:
+    if level.sort_key:
+        return (_remove_sort_key_punctuation(level.sort_key),)
+
+    label = level.label
+    candidates = [label]
+    first_word, separator, rest = label.partition(' ')
+    if separator and first_word.casefold() in SORT_KEY_ARTICLES:
+        candidates.append(rest)
+    apostrophized_article = next(
+        (article for article in SORT_KEY_APOSTROPHIZED_ARTICLES if label.casefold().startswith(article)),
+        '',
+    )
+    if apostrophized_article and (article_free_label := label[len(apostrophized_article):].strip()):
+        candidates.append(article_free_label)
+    if first_word == 'St.':
+        candidates.extend(f'{replacement} {rest}' for replacement in ('Saint', 'Sankt') if rest)
+    if first_word.startswith('Mc') and len(first_word) > 2:
+        candidates.append(f'Mac{first_word[2:]}{separator}{rest}')
+    if first_word.isdecimal():
+        number = int(first_word)
+        if 0 <= number <= 9999:
+            candidates.extend(
+                f'{number_word} {rest}'.strip()
+                for number_word in _number_word_candidates(number)
+            )
+    return tuple(
+        dict.fromkeys(
+            cleaned_candidate
+            for candidate in candidates
+            if (cleaned_candidate := _remove_sort_key_punctuation(candidate))
+        )
+    )
+
+
+def _normalize_sort_key(value: str) -> str:
+    normalized = unicodedata.normalize('NFKD', _remove_sort_key_punctuation(value).casefold())
+    normalized = ''.join(char for char in normalized if not unicodedata.combining(char))
+    normalized = re.sub(r'[^\w]+', ' ', normalized, flags=re.UNICODE)
+    return re.sub(r'\s+', ' ', normalized).strip()
+
+
+def _remove_sort_key_punctuation(value: str) -> str:
+    value = ''.join(
+        char for char in value
+        if not unicodedata.category(char).startswith('P')
+    )
+    return re.sub(r'\s+', ' ', value).strip()
+
+
+def _sort_key_order_prefix(value: str) -> str:
+    return ''.join(_normalize_sort_key(value).split()[:2])
+
+
+def _number_word_candidates(number: int) -> tuple[str, ...]:
+    return (_number_to_german(number), _number_to_english(number), _number_to_italian(number))
+
+
+def _number_to_german(number: int) -> str:
+    ones = ('null', 'eins', 'zwei', 'drei', 'vier', 'fünf', 'sechs', 'sieben', 'acht', 'neun')
+    teens = ('zehn', 'elf', 'zwölf', 'dreizehn', 'vierzehn', 'fünfzehn', 'sechzehn', 'siebzehn', 'achtzehn', 'neunzehn')
+    tens = ('', '', 'zwanzig', 'dreißig', 'vierzig', 'fünfzig', 'sechzig', 'siebzig', 'achtzig', 'neunzig')
+    if number < 10:
+        return ones[number]
+    if number < 20:
+        return teens[number - 10]
+    if number < 100:
+        return tens[number // 10] if number % 10 == 0 else f'{ones[number % 10]}und{tens[number // 10]}'
+    if number < 1000:
+        prefix = 'einhundert' if number // 100 == 1 else f'{ones[number // 100]}hundert'
+        return prefix + (_number_to_german(number % 100) if number % 100 else '')
+    prefix = 'tausend' if number // 1000 == 1 else f'{ones[number // 1000]}tausend'
+    return prefix + (_number_to_german(number % 1000) if number % 1000 else '')
+
+
+def _number_to_english(number: int) -> str:
+    ones = ('zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine')
+    teens = ('ten', 'eleven', 'twelve', 'thirteen', 'fourteen', 'fifteen', 'sixteen', 'seventeen', 'eighteen', 'nineteen')
+    tens = ('', '', 'twenty', 'thirty', 'forty', 'fifty', 'sixty', 'seventy', 'eighty', 'ninety')
+    if number < 10:
+        return ones[number]
+    if number < 20:
+        return teens[number - 10]
+    if number < 100:
+        return tens[number // 10] if number % 10 == 0 else f'{tens[number // 10]}-{ones[number % 10]}'
+    if number < 1000:
+        return f'{ones[number // 100]} hundred' + (f' {_number_to_english(number % 100)}' if number % 100 else '')
+    return f'{ones[number // 1000]} thousand' + (f' {_number_to_english(number % 1000)}' if number % 1000 else '')
+
+
+def _number_to_italian(number: int) -> str:
+    ones = ('zero', 'uno', 'due', 'tre', 'quattro', 'cinque', 'sei', 'sette', 'otto', 'nove')
+    teens = ('dieci', 'undici', 'dodici', 'tredici', 'quattordici', 'quindici', 'sedici', 'diciassette', 'diciotto', 'diciannove')
+    tens = ('', '', 'venti', 'trenta', 'quaranta', 'cinquanta', 'sessanta', 'settanta', 'ottanta', 'novanta')
+    if number < 10:
+        return ones[number]
+    if number < 20:
+        return teens[number - 10]
+    if number < 100:
+        return tens[number // 10] if number % 10 == 0 else f'{tens[number // 10]}{ones[number % 10]}'
+    if number < 1000:
+        prefix = 'cento' if number // 100 == 1 else f'{ones[number // 100]}cento'
+        return prefix + (_number_to_italian(number % 100) if number % 100 else '')
+    prefix = 'mille' if number // 1000 == 1 else f'{ones[number // 1000]}mila'
+    return prefix + (_number_to_italian(number % 1000) if number % 1000 else '')
 
 
 def iter_index_file_paths(source_dir: Path) -> list[Path]:
@@ -476,6 +713,18 @@ def _parse_lemma_level(raw_level: str) -> ParsedLemmaLevel:
     metadata = tuple(part.strip() for part in re.findall(r'\(([^()]*)\)', raw_level) if part.strip())
     label = re.sub(r'\([^()]*\)', '', raw_level)
     label = _normalize_whitespace(label).strip(' ,;:')
+    annotation_match = re.match(
+        # r'^(?P<source>\S+)\s+\[(?P<sort>[^\[\]]+)\],?(?P<rest>(?:\s+.+)?)$',
+        r'^\[(?P<sort>[^\[\]]+)\]\s*(?P<source>(?:\s+.+)?)$',
+        label,
+    )
+    if annotation_match is not None:
+        source = annotation_match.group('source')
+        sort_token = annotation_match.group('sort').strip()
+        if not sort_token:
+            raise OdtIndexParseError(f'Invalid sort-key annotation in lemma level: {raw_level!r}')
+        return ParsedLemmaLevel(label=source, metadata=metadata, sort_key=sort_token)
+
     return ParsedLemmaLevel(label=label, metadata=metadata)
 
 

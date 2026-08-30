@@ -619,6 +619,102 @@ class ReferenceFixtureExportTests(TestCase):
         self.assertEqual(cross_references[0]['fields']['target_entry'], person_mueller_pk)
         self.assertIsNone(cross_references[1]['fields']['target_entry'])
 
+    def test_build_index_fixture_rows_truncates_overlong_labels(self):
+        from .reference_fixtures import build_index_fixture_rows
+
+        payload = {
+            'entries': [{
+                'index_type': 'S',
+                'levels': [{'label': 'X' * 1066, 'metadata': []}],
+                'references': [],
+            }],
+        }
+
+        rows = build_index_fixture_rows(payload)
+        label_row = next(row for row in rows if row['model'] == 'indexer.indexentrylabel')
+        self.assertEqual(len(label_row['fields']['label']), 500)
+
+    def test_build_index_fixture_rows_preserves_subject_and_person_sort_keys(self):
+        from .reference_fixtures import build_index_fixture_rows
+
+        payload = {
+            'entries': [
+                {
+                    'index_type': 'S',
+                    'levels': [{'label': 'A Journal', 'metadata': [], 'sort_key': 'Journal'}],
+                    'references': [],
+                },
+                {
+                    'index_type': 'P',
+                    'levels': [
+                        {'label': 'McKinney', 'metadata': [], 'sort_key': 'MacKinney'},
+                        {'label': 'John', 'metadata': [], 'sort_key': 'John'},
+                    ],
+                    'references': [],
+                },
+            ],
+        }
+
+        rows = build_index_fixture_rows(payload)
+        labels = {
+            row['fields']['label']: row['fields']['sort_key']
+            for row in rows if row['model'] == 'indexer.indexentrylabel'
+        }
+
+        self.assertEqual(labels['A Journal'], 'Journal')
+        self.assertEqual(labels['McKinney, John'], 'MacKinney, John')
+
+    def test_build_index_fixture_rows_distinguishes_identical_labels_by_metadata(self):
+        from .reference_fixtures import build_index_fixture_rows
+
+        payload = {
+            'entries': [
+                {
+                    'index_type': 'S',
+                    'levels': [{'label': 'Changsha', 'metadata': ['长沙']}],
+                    'references': [],
+                },
+                {
+                    'index_type': 'S',
+                    'levels': [{'label': 'Changsha', 'metadata': ['长砂']}],
+                    'references': [],
+                },
+                {
+                    'index_type': 'P',
+                    'levels': [
+                        {'label': 'Müller', 'metadata': ['1900-1970']},
+                        {'label': 'Hans', 'metadata': []},
+                    ],
+                    'references': [],
+                },
+                {
+                    'index_type': 'P',
+                    'levels': [
+                        {'label': 'Müller', 'metadata': ['1920-1985']},
+                        {'label': 'Hans', 'metadata': []},
+                    ],
+                    'references': [],
+                },
+            ],
+        }
+
+        rows = build_index_fixture_rows(payload)
+        index_rows = [row for row in rows if row['model'] == 'indexer.indexentry']
+        label_rows = [row for row in rows if row['model'] == 'indexer.indexentrylabel']
+
+        changsha_entries = [
+            row for row in label_rows
+            if row['fields']['label'] == 'Changsha'
+        ]
+        person_entries = [
+            row for row in label_rows
+            if row['fields']['label'] == 'Müller, Hans'
+        ]
+
+        self.assertEqual(len(changsha_entries), 2)
+        self.assertEqual(len(person_entries), 2)
+        self.assertEqual(len(index_rows), 4)
+
     def test_build_reference_fixture_rows_from_parsed_payload(self):
         from .reference_fixtures import build_reference_fixture_rows
 
